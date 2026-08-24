@@ -1,32 +1,28 @@
 # CEVE543Utils
 
-Extreme value fitting for CEVE 543, with the interface of
-[Extremes.jl](https://github.com/jojal5/Extremes.jl) over a Turing model.
+Helpers for [CEVE 543: Statistical-Physical Methods for Hydroclimate Extremes and
+Catastrophes](https://ceve543.github.io/).
 
-`gevfit`, `gpfit`, `getdistribution` and `returnlevel` mean what they mean in
-Extremes.jl, and covariates are named the same way. What differs is underneath:
-each family is one Turing model, entered either by mode estimation for a point
-estimate or by NUTS for the posterior, so covariates reach both.
+Extreme value fitting with the interface of
+[Extremes.jl](https://github.com/jojal5/Extremes.jl) over a Turing model, so
+`gevfit`, `gpfit`, `getdistribution` and `returnlevel` mean what they mean
+there, and one model serves both the point estimate and the posterior.
 
 ```julia
-fit = gevfit(annmax)                       # stationary, maximum likelihood
-gev = only(getdistribution(fit))           # one distribution
-returnlevel(fit, 100)                      # the 100-year level
+fit = gevfit(annmax)                            # stationary, maximum likelihood
+only(getdistribution(fit))                      # the fitted distribution
+returnlevel(fit, 100)                           # the 100-year level
 
 fit = gevfit(df, :lsl; locationcovid=[:year])   # location moves with the year
 getdistribution(fit)                            # one distribution per row
-```
 
-Peaks over threshold works the same way, with the threshold as a second
-argument:
-
-```julia
-fit = gpfit(discharge, 500.0; logscalecovid=[:enso])
+fit = gpfit(discharge, 500.0)                   # peaks over a threshold
+fit = gevfitbayes(annmax)                       # posterior instead of a point
 ```
 
 ## Installing
 
-Not registered. Add it by URL, and record that URL in `[sources]` so the project
+Not registered. Add it by URL and record that URL in `[sources]`, so the project
 resolves without a manifest:
 
 ```toml
@@ -37,9 +33,5 @@ CEVE543Utils = "9cb47f62-1030-411a-9180-bf3a9ffb897b"
 CEVE543Utils = {url = "https://github.com/CEVE543/CEVE543Utils"}
 ```
 
-## Dependencies
-
-Deliberately thin. Tables.jl rather than DataFrames, so a DataFrame, a
-`NamedTuple` of vectors, and a `CSV.File` all work without the dependency. Makie
-is a weak dependency: `plotting_positions` is always there, and
-`return_period_axis!` appears once a backend is loaded.
+Makie is a weak dependency: `plotting_positions` is always available, and
+`return_period_axis!` appears once you load a backend.
