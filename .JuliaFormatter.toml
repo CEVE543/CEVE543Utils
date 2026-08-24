@@ -1,0 +1,11 @@
+# BlueStyle, applied to every .jl in the repo. JuliaFormatter picks this up
+# automatically from the project root.
+#
+# Julia inside {julia} cells in a .qmd is NOT covered: JuliaFormatter parses
+# whole files and cannot read a fenced cell out of Markdown. The lint skill
+# handles those by extracting cells, formatting each, and splicing them back.
+style = "blue"
+
+# BlueStyle's own limit. Long string literals and comments are left alone;
+# only code is wrapped.
+margin = 92
