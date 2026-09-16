@@ -32,12 +32,13 @@ import Distributions: logpdf, params
 export gev_logpdf, gp_logpdf, GEVKernel, GPKernel
 export design_matrix
 export EVAFit, params, getdistribution, returnlevel, loglike
-export gevfit, gpfit, gevfitbayes, gpfitbayes
+export gevfit, gpfit, gevfitbayes, gpfitbayes, gevfit_lmom
 export plotting_positions, return_period_axis, return_period_axis!
 
 include("kernels.jl")
 include("models.jl")
 include("fitting.jl")
+include("lmoments.jl")
 include("tables.jl")
 
 """

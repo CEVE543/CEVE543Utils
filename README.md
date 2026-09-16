@@ -3,10 +3,14 @@
 Helpers for [CEVE 543: Statistical-Physical Methods for Hydroclimate Extremes and
 Catastrophes](https://ceve543.github.io/).
 
-Extreme value fitting with the interface of
-[Extremes.jl](https://github.com/jojal5/Extremes.jl) over a Turing model, so
-`gevfit`, `gpfit`, `getdistribution` and `returnlevel` mean what they mean
-there, and one model serves both the point estimate and the posterior.
+Extreme value fitting inspired by
+[Extremes.jl](https://github.com/jojal5/Extremes.jl) (MIT, Jalbert, Farmer &
+Roy 2020), with a lighter dependency footprint built on Turing.
+`gevfit`, `gpfit`, `getdistribution` and `returnlevel` follow the Extremes.jl
+interface, and one Turing model serves both the point estimate and the
+posterior.
+The L-moment estimator (`gevfit_lmom`) adapts the probability weighted moment
+algorithm from Extremes.jl, following Hosking, Wallis & Wood (1985).
 
 ```julia
 fit = gevfit(annmax)                            # stationary, maximum likelihood
