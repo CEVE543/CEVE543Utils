@@ -14,6 +14,16 @@ estimate or by NUTS for the posterior, so covariates reach both.
     fit = gevfit(annmax; locationcov=[years])     # location moves with the year
     getdistribution(fit)                          # one distribution per year
 
+`load_water_level` downloads a NOAA tide gauge's record and `AnnMaxRecord` takes
+its annual maxima, so a fit can be run against any station on the network.
+Levels carry Unitful units, and `ustrip` hands plain numbers to a fit:
+
+    record = load_water_level("8638610")             # Sewells Point, VA
+    annmax = AnnMaxRecord(record; detrend=:msl)
+    gevfit(ustrip.(u"ft", levels(annmax)))
+
+Station ids are listed at <https://tidesandcurrents.noaa.gov/stations.html>.
+
 Plot helpers live in an extension: `plotting_positions` is always available, and
 `return_period_axis!` appears once Makie is loaded.
 """
@@ -33,6 +43,8 @@ export gev_logpdf, gp_logpdf, GEVKernel, GPKernel
 export design_matrix
 export EVAFit, params, getdistribution, returnlevel, loglike
 export gevfit, gpfit, gevfitbayes, gpfitbayes, gevfit_lmom
+export Station, WaterLevelRecord, AnnMaxRecord
+export load_water_level, waterlevels, obstimes, obsyears, baseline
 export plotting_positions, return_period_axis, return_period_axis!
 
 include("kernels.jl")
@@ -40,6 +52,8 @@ include("models.jl")
 include("fitting.jl")
 include("lmoments.jl")
 include("tables.jl")
+include("tidegauge.jl")   # defines DETREND_METHODS, which records.jl interpolates
+include("records.jl")
 
 """
     plotting_positions(y) -> (sorted, p, T)

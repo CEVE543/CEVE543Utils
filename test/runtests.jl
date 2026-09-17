@@ -1,10 +1,14 @@
 using CairoMakie          # loading a backend is what turns the Makie extension on
 using CEVE543Utils
+using CEVE543Utils: detrend_baseline, recentre
+using CSV
 using DataFrames
+using Dates
 using Distributions
 using Random
 using Statistics
 using Test
+using Unitful: @u_str, unit, ustrip
 
 @testset "plotting_positions" begin
     sorted, p, T = plotting_positions([1.0, 5.0, 3.0])
@@ -141,6 +145,156 @@ end
 
     # a posterior is not a point estimate, and says so rather than guessing
     @test_throws ArgumentError params(fit)
+end
+
+@testset "detrend_baseline and recentre" begin
+    yrs = collect(2000:2019)
+    msl = 0.01 .* (yrs .- 2000)                    # 10 mm/yr of sea-level rise
+    annmax = 5.0 .+ msl                            # maxima that ride on it exactly
+
+    @test detrend_baseline(yrs, annmax, msl, :none) == zeros(20)
+
+    for method in (:linear, :msl)
+        baseline = detrend_baseline(yrs, annmax, msl, method)
+        flat = annmax .- baseline .+ recentre(baseline)
+        @test all(≈(flat[1]), flat)                # the rise is gone either way
+        @test mean(flat) ≈ mean(annmax[(end - 4):end]) rtol = 1e-8   # recentred on the last 5
+    end
+
+    # Only :msl follows a baseline that is not a straight line. Give the sea a
+    # step change and the fitted line smears it across the record.
+    stepped = [y < 2010 ? 0.0 : 0.5 for y in yrs]
+    surge = fill(5.0, 20) .+ stepped
+    by_msl = surge .- detrend_baseline(yrs, surge, stepped, :msl)
+    by_line = surge .- detrend_baseline(yrs, surge, stepped, :linear)
+    @test std(by_msl) ≈ 0 atol = 1e-10             # removed exactly
+    @test std(by_line) > 0.1                       # a line cannot see a step
+
+    @test_throws ArgumentError detrend_baseline(yrs, annmax, msl, :quadratic)
+
+    # recentre averages the last REF_WINDOW entries, and copes with a record
+    # shorter than that window.
+    @test recentre([1.0, 2.0, 3.0]) ≈ 2.0
+    @test recentre(collect(1.0:10.0)) ≈ mean(6.0:10.0)
+end
+
+@testset "records carry their station and units" begin
+    station = Station("8638610"; name="Sewells Point", datum="MSL")
+    @test occursin("Sewells Point", sprint(show, station))
+    @test occursin("MSL", sprint(show, station))
+
+    times = [DateTime(2020, 1, 1, h) for h in 0:3]
+    record = WaterLevelRecord(station, times, [1.0, 1.1, 1.2, 1.3], u"m")
+    @test length(record) == 4
+    @test record[1].level == 1.0u"m"
+    @test record[1].time == DateTime(2020, 1, 1)
+    @test last(collect(record)).level == 1.3u"m"      # iteration gives readings
+    @test waterlevels(record) == [1.0, 1.1, 1.2, 1.3]u"m"
+    @test obstimes(record) == times
+    @test occursin("4 readings", sprint(show, MIME"text/plain"(), record))
+
+    # The unit is one field for the whole record, so the levels stay bare floats.
+    @test record.levels isa Vector{Float64}
+    @test ustrip.(waterlevels(record)) == record.levels
+
+    @test_throws DimensionMismatch WaterLevelRecord(station, times, [1.0], u"m")
+    @test_throws ArgumentError WaterLevelRecord(station, times, ones(4), u"s")
+end
+
+@testset "AnnMaxRecord takes the maximum of each year" begin
+    station = Station("test")
+    # Two years of six-hourly readings, the second 0.3 m higher throughout.
+    times, levels = DateTime[], Float64[]
+    for (i, yr) in enumerate((2000, 2001)), day in 1:365, hour in (0, 6, 12, 18)
+        push!(times, DateTime(yr, 1, 1) + Day(day - 1) + Hour(hour))
+        push!(levels, (i - 1) * 0.3 + sin(day / 58) * 0.5 + hour / 100)
+    end
+    record = WaterLevelRecord(station, times, levels, u"m")
+
+    annmax = AnnMaxRecord(record; detrend=:none, min_readings=1_000)
+    @test length(annmax) == 2
+    @test obsyears(annmax) == [2000, 2001]
+    @test unit(first(waterlevels(annmax))) == u"ft"    # converted on the way out
+    @test annmax.detrend === :none
+    @test all(iszero, annmax.baseline)
+    # 2001 sits 0.3 m above 2000, and :none leaves that difference alone.
+    @test ustrip(u"m", waterlevels(annmax)[2] - waterlevels(annmax)[1]) ≈ 0.3 atol = 1e-8
+
+    # Units convert rather than relabel: the same record in metres and in feet.
+    in_metres = AnnMaxRecord(record; detrend=:none, min_readings=1_000, units=u"m")
+    @test ustrip.(u"m", waterlevels(annmax)) ≈ in_metres.levels
+
+    # A year with too few readings is dropped rather than half-counted.
+    @test_throws ArgumentError AnnMaxRecord(record; min_readings=10_000)
+    @test_throws ArgumentError AnnMaxRecord(record; detrend=:quadratic)
+end
+
+@testset "DataFrame(record)" begin
+    station = Station("test")
+    record = WaterLevelRecord(
+        station, [DateTime(2020, 1, 1), DateTime(2020, 1, 1, 1)], [1.0, 2.0], u"m"
+    )
+
+    df = DataFrame(record)
+    @test names(df) == ["time", "level_m"]
+    @test df.level_m == [1.0, 2.0]                     # bare numbers by default
+    @test DataFrame(record; keep_units=true).level_m == [1.0, 2.0]u"m"
+
+    annmax = AnnMaxRecord(station, [2000, 2001], [4.0, 5.0], u"ft", :linear, [0.1, 0.2])
+    adf = DataFrame(annmax)
+    @test names(adf) == ["year", "level_ft", "baseline_ft"]
+    @test adf.year == [2000, 2001]
+    @test DataFrame(annmax; keep_units=true).level_ft == [4.0, 5.0]u"ft"
+
+    @test_throws ArgumentError AnnMaxRecord(
+        station, [2000], [4.0], u"ft", :quadratic, [0.0]
+    )
+end
+
+@testset "load_water_level rejects an unusable cache" begin
+    path = joinpath(mktempdir(), "wrong-columns.csv")
+    CSV.write(path, DataFrame(; time=[DateTime(2000)], surge=[4.0]))   # no level_m
+    @test_throws ArgumentError load_water_level("8638610"; cache=path)
+end
+
+@testset "load_water_level reads a cache without the network" begin
+    path = joinpath(mktempdir(), "cached.csv")
+    CSV.write(
+        path,
+        DataFrame(;
+            time=[DateTime(2000, 1, 1), DateTime(2000, 1, 1, 1)], level_m=[1.0, 2.0]
+        ),
+    )
+
+    record = load_water_level("not-a-station"; cache=path)   # a download would fail
+    @test length(record) == 2
+    @test waterlevels(record) == [1.0, 2.0]u"m"
+    @test record.station.id == "not-a-station"
+end
+
+# The NOAA API is a network dependency and a full record is a large download, so
+# these run only when asked for:
+#     CEVE543_NETWORK_TESTS=1 julia --project=. test/runtests.jl
+if get(ENV, "CEVE543_NETWORK_TESTS", "0") == "1"
+    @testset "load_water_level against NOAA" begin
+        path = joinpath(mktempdir(), "sewells.csv")
+        record = load_water_level("8638610"; first_year=2003, last_year=2004, cache=path)
+
+        @test length(record) == 17_544                  # two years of hourly readings
+        @test unit(first(waterlevels(record))) == u"m"
+        # Hurricane Isabel, the largest reading in this window.
+        @test maximum(record.levels) ≈ 1.992 atol = 1e-3
+        @test isfile(path)                              # the download was cached
+        @test length(load_water_level("8638610"; cache=path)) == length(record)
+
+        annmax = AnnMaxRecord(record; detrend=:none, units=u"m")
+        @test obsyears(annmax) == [2003, 2004]
+        @test maximum(annmax.levels) ≈ 1.992 atol = 1e-3
+
+        @test_throws ArgumentError load_water_level(
+            "0000000"; first_year=2020, last_year=2020, cache=nothing
+        )
+    end
 end
 
 @testset "return_period_axis, from the Makie extension" begin
