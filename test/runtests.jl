@@ -33,6 +33,40 @@ end
     @test gev_logpdf(-100.0, 4.0, 0.8, 0.5) == -Inf
     @test gp_logpdf(1.0, -1.0, 0.2) == -Inf
     @test gp_logpdf(100.0, 1.0, -0.5) == -Inf
+
+    # `log1p` raises on an argument at or below -1 rather than returning a
+    # non-finite value, so the support test has to come first.
+    @test gev_logpdf(4.0 - 0.8 / 0.5, 4.0, 0.8, 0.5) == -Inf   # exactly at the boundary
+    @test gp_logpdf(2.0, 1.0, -0.5) == -Inf
+end
+
+@testset "the shape carries a derivative through zero" begin
+    # The density is written through log1p(ξz)/ξ, whose series expansion keeps ξ
+    # in the expression at the Gumbel limit. Branching onto the Gumbel instead
+    # drops ξ, and the derivative of an expression that no longer contains a
+    # parameter is zero, which an optimizer reads as convergence.
+    slope(ξ; h=1e-9) =
+        (gev_logpdf(5.0, 4.0, 0.8, ξ + h) - gev_logpdf(5.0, 4.0, 0.8, ξ - h)) / 2h
+
+    for ξ in (1e-8, 0.0, -1e-8)
+        @test abs(slope(ξ)) > 0.1        # the defect this replaces returned exactly 0.0
+    end
+    # and it is one curve through zero, not two pieces meeting there
+    @test slope(1e-8) ≈ slope(-1e-8) rtol = 1e-4
+
+    # The series is taken for |ξz| <= 0.01 and the direct form outside it, so the
+    # density has to agree across that seam.
+    z = (5.0 - 4.0) / 0.8
+    inside, outside = 0.0099 / z, 0.0101 / z
+    @test gev_logpdf(5.0, 4.0, 0.8, inside) ≈ gev_logpdf(5.0, 4.0, 0.8, outside) rtol = 1e-3
+    @test gp_logpdf(3.0, 2.0, 0.0099 / 1.5) ≈ gp_logpdf(3.0, 2.0, 0.0101 / 1.5) rtol = 1e-3
+
+    # Against Distributions.jl on both sides of the seam, where it is defined.
+    for ξ in (0.05, 0.005, -0.005, -0.05)
+        @test gev_logpdf(5.0, 4.0, 0.8, ξ) ≈
+            logpdf(GeneralizedExtremeValue(4.0, 0.8, ξ), 5.0)
+        @test gp_logpdf(3.0, 2.0, ξ) ≈ logpdf(GeneralizedPareto(0.0, 2.0, ξ), 3.0)
+    end
 end
 
 @testset "design_matrix" begin
