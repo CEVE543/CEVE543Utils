@@ -1,7 +1,8 @@
 module CEVE543UtilsMakieExt
 
-using CEVE543Utils: CEVE543Utils
-using Makie: Axis, xlims!
+using CEVE543Utils: CEVE543Utils, mrl_data, stability_data
+using Makie: Axis, Figure, band!, lines!, scatter!, xlims!
+using Makie
 
 const TICKS = [1, 2, 5, 10, 25, 100, 1000]
 
@@ -37,6 +38,41 @@ Build an `Axis` in `position` and style it with `return_period_axis!`.
 """
 function CEVE543Utils.return_period_axis(position; ticks=TICKS, kwargs...)
     return CEVE543Utils.return_period_axis!(Axis(position; kwargs...); ticks=ticks)
+end
+
+"""
+    mrl_plot(values; kwargs...) -> Figure
+
+Mean residual life plot with 95% confidence band.
+Keyword arguments are passed through to [`mrl_data`](@ref).
+"""
+function CEVE543Utils.mrl_plot(values; color=Makie.wong_colors()[1], figsize=(800, 340), kwargs...)
+    t, m, lo, hi = mrl_data(values; kwargs...)
+    fig = Figure(; size=figsize)
+    ax = Axis(fig[1, 1]; xlabel="Threshold", ylabel="Mean excess")
+    band!(ax, t, lo, hi; color=(color, 0.2))
+    lines!(ax, t, m; color=color, linewidth=2)
+    return fig
+end
+
+"""
+    stability_plot(values; kwargs...) -> Figure
+
+Parameter stability plot: reparameterized scale σ* and shape ξ against threshold,
+with 95% confidence bands. Keyword arguments are passed through to
+[`stability_data`](@ref).
+"""
+function CEVE543Utils.stability_plot(values; figsize=(800, 500), kwargs...)
+    colors = Makie.wong_colors()
+    t, ss, xi, ss_se, xi_se = stability_data(values; kwargs...)
+    fig = Figure(; size=figsize)
+    ax1 = Axis(fig[1, 1]; ylabel="σ* = σᵤ - ξu")
+    band!(ax1, t, ss .- 1.96 .* ss_se, ss .+ 1.96 .* ss_se; color=(colors[1], 0.2))
+    scatter!(ax1, t, ss; color=colors[1], markersize=5)
+    ax2 = Axis(fig[2, 1]; xlabel="Threshold", ylabel="ξ")
+    band!(ax2, t, xi .- 1.96 .* xi_se, xi .+ 1.96 .* xi_se; color=(colors[2], 0.2))
+    scatter!(ax2, t, xi; color=colors[2], markersize=5)
+    return fig
 end
 
 end # module

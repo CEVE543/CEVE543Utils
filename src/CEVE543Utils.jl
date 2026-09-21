@@ -46,6 +46,8 @@ export gevfit, gpfit, gevfitbayes, gpfitbayes, gevfit_lmom
 export Station, WaterLevelRecord, AnnMaxRecord
 export load_water_level, waterlevels, obstimes, obsyears, baseline
 export plotting_positions, return_period_axis, return_period_axis!
+export decluster, decluster_daily, mrl_data, stability_data, pot_return_level
+export mrl_plot, stability_plot
 
 include("kernels.jl")
 include("models.jl")
@@ -54,6 +56,7 @@ include("lmoments.jl")
 include("tables.jl")
 include("tidegauge.jl")   # defines DETREND_METHODS, which records.jl interpolates
 include("records.jl")
+include("pot.jl")
 
 """
     plotting_positions(y) -> (sorted, p, T)
@@ -75,5 +78,7 @@ end
 # backend is what turns them on and a lab that only fits pays nothing for Makie.
 function return_period_axis! end
 function return_period_axis end
+function mrl_plot end
+function stability_plot end
 
 end # module
