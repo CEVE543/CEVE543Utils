@@ -47,10 +47,10 @@ Mean residual life plot with 95% confidence band.
 Keyword arguments are passed through to [`mrl_data`](@ref).
 """
 function CEVE543Utils.mrl_plot(values; color=Makie.wong_colors()[1], figsize=(800, 340), kwargs...)
-    t, m, lo, hi = mrl_data(values; kwargs...)
+    t, m, lo_band, hi_band = mrl_data(values; kwargs...)
     fig = Figure(; size=figsize)
     ax = Axis(fig[1, 1]; xlabel="Threshold", ylabel="Mean excess")
-    band!(ax, t, lo, hi; color=(color, 0.2))
+    band!(ax, t, lo_band, hi_band; color=(color, 0.2))
     lines!(ax, t, m; color=color, linewidth=2)
     return fig
 end

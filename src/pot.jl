@@ -76,17 +76,21 @@ function mrl_data(
     n_thresholds::Integer=80,
     lo_quantile::Real=0.5,
     hi_quantile::Real=0.995,
+    lo::Union{Real,Nothing}=nothing,
+    hi::Union{Real,Nothing}=nothing,
+    min_count::Integer=5,
 )
     sorted = sort(collect(Float64, values))
-    lo, hi = quantile(sorted, lo_quantile), quantile(sorted, hi_quantile)
-    thresholds = range(lo, hi; length=n_thresholds)
+    lo_val = isnothing(lo) ? quantile(sorted, lo_quantile) : Float64(lo)
+    hi_val = isnothing(hi) ? quantile(sorted, hi_quantile) : Float64(hi)
+    thresholds = range(lo_val, hi_val; length=n_thresholds)
     means = Vector{Float64}(undef, n_thresholds)
     lower = Vector{Float64}(undef, n_thresholds)
     upper = Vector{Float64}(undef, n_thresholds)
     for (k, u) in enumerate(thresholds)
         exc = sorted[sorted .> u] .- u
         n = length(exc)
-        if n < 5
+        if n < min_count
             means[k] = lower[k] = upper[k] = NaN
             continue
         end
