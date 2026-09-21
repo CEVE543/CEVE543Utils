@@ -110,18 +110,16 @@ function append_year!(
         "&begin_date=$(yr)0101&end_date=$(yr)1231" *
         "&datum=$datum&station=$station&time_zone=GMT&units=metric&format=csv"
     )
-    # A wrong station id is answered with HTTP 400 rather than an empty CSV, so
-    # the download is where a typo has to be caught. A year outside the gauge's
-    # record answers 200 with a one-line body, which parses to nothing.
-    body = try
-        sprint(io -> download(url, io))
-    catch err
-        throw(
-            ArgumentError(
-                "could not download station $station for $yr; " *
-                "check the id at $COOPS_STATIONS ($err)",
-            ),
-        )
+    body = nothing
+    for attempt in 1:3
+        try
+            body = sprint(io -> download(url, io))
+            break
+        catch err
+            attempt < 3 && (sleep(2^attempt); continue)
+            @warn "station $station year $yr: download failed after 3 attempts, skipping" err
+            return nothing
+        end
     end
 
     # `normalizenames` is what strips the leading spaces the product puts in its
