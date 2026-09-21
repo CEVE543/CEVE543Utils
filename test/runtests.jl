@@ -331,6 +331,64 @@ if get(ENV, "CEVE543_NETWORK_TESTS", "0") == "1"
     end
 end
 
+@testset "decluster" begin
+    times = [DateTime(2000, 1, 1, h) for h in 0:23]
+    levels = Float64[h == 5 ? 10.0 : h == 6 ? 9.0 : h == 20 ? 12.0 : 1.0 for h in 0:23]
+    idx, exc = decluster(times, levels, 5.0; min_gap_hours=6)
+    @test length(idx) == 2
+    @test levels[idx[1]] == 10.0
+    @test levels[idx[2]] == 12.0
+    @test exc == [5.0, 7.0]
+
+    idx0, exc0 = decluster(times, levels, 99.0)
+    @test isempty(idx0) && isempty(exc0)
+end
+
+@testset "decluster_daily" begin
+    vals = zeros(20)
+    vals[3] = 10.0; vals[4] = 11.0; vals[15] = 8.0
+    idx, exc = decluster_daily(vals, 5.0; min_gap_days=3)
+    @test length(idx) == 2
+    @test vals[idx[1]] == 11.0
+    @test exc[2] ≈ 3.0
+
+    @test isempty(decluster_daily(vals, 99.0)[1])
+end
+
+@testset "mrl_data" begin
+    rng = MersenneTwister(543)
+    σ = 2.0
+    data = rand(rng, Exponential(σ), 10_000)
+    t, m, lo, hi = mrl_data(data; n_thresholds=50)
+    @test length(t) == 50
+    ok = .!isnan.(m)
+    @test any(ok)
+    @test all((lo[ok] .<= m[ok]) .& (m[ok] .<= hi[ok]))
+    # Memoryless: mean excess above any threshold is σ, regardless of threshold.
+    @test mean(m[ok]) ≈ σ rtol = 0.15
+end
+
+@testset "stability_data" begin
+    rng = MersenneTwister(543)
+    data = rand(rng, GeneralizedPareto(0.0, 2.0, 0.1), 10_000)
+    t, ss, xi, ss_se, xi_se = stability_data(data; n_thresholds=20)
+    ok = .!isnan.(xi)
+    @test any(ok)
+    @test mean(xi[ok]) ≈ 0.1 atol = 0.15
+end
+
+@testset "pot_return_level" begin
+    sigma, xi, u, lam = 2.0, 0.2, 5.0, 10.0
+    rl = pot_return_level(100, u, sigma, xi, lam)
+    @test rl > u
+    d = GeneralizedPareto(0.0, sigma, xi)
+    expected = u + quantile(d, 1 - 1 / (100 * lam))
+    @test rl ≈ expected rtol = 0.01
+
+    rl_gumbel = pot_return_level(100, u, sigma, 0.0, lam)
+    @test rl_gumbel ≈ u + sigma * log(100 * lam)
+end
+
 @testset "return_period_axis, from the Makie extension" begin
     ticks = [1, 2, 5, 10, 25, 100, 1000]
 
