@@ -278,7 +278,7 @@ function gpfit(
 end
 
 """
-    gevfitbayes(y; locationcov, logscalecov, shapecov, n_samples, n_chains, rng, sampler)
+    gevfitbayes(y; locationcov, logscalecov, shapecov, prior_scale, n_samples, n_chains, rng, sampler)
 
 Sample the posterior with NUTS instead of taking a point estimate.
 
@@ -316,12 +316,13 @@ function gevfitbayes(
 end
 
 """
-    gpfitbayes(y, threshold; logscalecov, shapecov, n_samples, n_chains, rng, sampler)
+    gpfitbayes(y, threshold; logscalecov, shapecov, prior_scale, n_samples, n_chains, rng, sampler)
 
 Sample the posterior of a peaks over threshold fit with NUTS.
 
-`prior_scale` is the prior variance of every log-scale coefficient; the shape
-coefficients have prior standard deviation 0.5. [`posterior_distributions`](@ref)
+Covariates are standardized and `fit.estimate` is on that scale, as in
+[`gevfitbayes`](@ref). Priors: `N(0, prior_scale)` on every log-scale
+coefficient, `N(0, 0.25)` on the shape coefficients. [`posterior_distributions`](@ref)
 turns the chain into distributions. `sampler` is passed to Turing's `sample` and
 defaults to `NUTS()`, as in [`gevfitbayes`](@ref).
 """

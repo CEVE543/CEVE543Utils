@@ -26,13 +26,15 @@ end
     standardize(X) -> (X, center, scale)
 
 Replace each covariate column `x` of a design matrix by `(x - mean(x)) / std(x)`,
-leaving the intercept column alone. A constant column gets `scale = 1`.
+leaving the intercept column alone. A column with `std(x) <= 1e-8 max(|mean(x)|, 1)`
+(constant up to rounding, or a single row) gets `scale = 1`.
 [`params`](@ref) uses `center` and `scale` to undo the transform.
 """
 function standardize(X::AbstractMatrix)
     center = vec(mean(X[:, 2:end]; dims=1))
     scale = vec(std(X[:, 2:end]; dims=1))
-    scale[scale .== 0] .= 1
+    constant = .!(scale .> 1e-8 .* max.(abs.(center), 1))   # also catches NaN
+    scale[constant] .= 1
     Z = copy(X)
     Z[:, 2:end] .= (X[:, 2:end] .- center') ./ scale'
     return (X=Z, center=center, scale=scale)

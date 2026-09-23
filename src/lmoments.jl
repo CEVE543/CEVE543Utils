@@ -40,10 +40,16 @@ function gevfit_lmom(y::AbstractVector{<:Real})
     length(y) >= 3 || throw(
         ArgumentError("gevfit_lmom needs at least 3 observations, got $(length(y))")
     )
-    b0 = pwm(y, 1, 0, 0)
-    b1 = pwm(y, 1, 1, 0)
-    b2 = pwm(y, 1, 2, 0)
+    return gev_from_pwm(pwm(y, 1, 0, 0), pwm(y, 1, 1, 0), pwm(y, 1, 2, 0))
+end
 
+"""
+    gev_from_pwm(b0, b1, b2) -> GeneralizedExtremeValue
+
+The GEV whose first three probability weighted moments are `b0, b1, b2`
+(Hosking et al. 1985, eqs. 14-16).
+"""
+function gev_from_pwm(b0::Real, b1::Real, b2::Real)
     c = (2b1 - b0) / (3b2 - b0) - log(2) / log(3)
     k = 7.8590c + 2.9554c^2
     if abs(k) < 1e-8

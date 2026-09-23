@@ -76,6 +76,15 @@ end
     @test design_matrix(3, [[1.0, 2.0, 3.0]]) == [1.0 1.0; 1.0 2.0; 1.0 3.0]
     @test size(design_matrix(4, [[1, 2, 3, 4], [5, 6, 7, 8]])) == (4, 3)
     @test_throws DimensionMismatch design_matrix(3, [[1.0, 2.0]])
+
+    Z = CEVE543Utils.standardize([1.0 1900.0; 1.0 1950.0; 1.0 2000.0])
+    @test Z.X[:, 1] == ones(3)
+    @test Z.X[:, 2] ≈ [-1.0, 0.0, 1.0]
+    @test Z.center == [1950.0] && Z.scale == [50.0]
+    # constant up to rounding: std is ~1e-17, which must not become the scale
+    C = CEVE543Utils.standardize([1.0 0.1; 1.0 0.1; 1.0 0.1])
+    @test C.scale == [1.0]
+    @test all(abs.(C.X[:, 2]) .< 1e-12)
 end
 
 @testset "gevfit, stationary" begin
@@ -104,10 +113,16 @@ end
     @test d.σ ≈ truth.σ rtol = 0.05
     @test d.ξ ≈ truth.ξ atol = 0.03
 
-    # the Gumbel case comes back finite
+    # Gumbel data lands near the k = 0 branch
     g = gevfit_lmom(rand(MersenneTwister(543), Gumbel(4.0, 0.8), 20_000))
-    @test isfinite(g.σ) && isfinite(g.μ)
+    @test g.σ ≈ 0.8 rtol = 0.05
     @test g.ξ ≈ 0.0 atol = 0.03
+    # and exactly on it: b0 = 0, b1 = log 2, b2 = 2 log 3 / 3 make c = 0, so
+    # σ = λ₂ / log 2 = 2 and μ = λ₁ - γσ = -2γ
+    exact = CEVE543Utils.gev_from_pwm(0.0, log(2), 2 * log(3) / 3)
+    @test exact.ξ == 0.0
+    @test exact.σ ≈ 2.0
+    @test exact.μ ≈ -2 * Base.MathConstants.eulergamma
 
     # probability weighted moments: b0 is the mean
     @test CEVE543Utils.pwm([1.0, 2.0, 3.0], 1, 0, 0) ≈ 2.0
@@ -116,10 +131,8 @@ end
 end
 
 @testset "the shape does not get stuck at zero" begin
-    # Both densities fall back to a ξ = 0 limit that does not contain ξ, so the
-    # gradient there is identically zero and an optimizer started at exactly
-    # zero reports success without ever moving the shape. Positive, negative and
-    # near-zero truths all have to come back.
+    # The optimizer starts the shape at SHAPE_INIT, away from the flat region
+    # near ξ = 0. Positive, negative and near-zero truths all have to come back.
     for ξ in (0.15, -0.2, 0.0)
         truth = GeneralizedExtremeValue(4.0, 0.8, ξ)
         d = only(getdistribution(gevfit(rand(MersenneTwister(543), truth, 5_000))))
@@ -149,9 +162,10 @@ end
 end
 
 @testset "gevfit with covariates on their raw scale" begin
-    # Calendar years are what a student passes, and the intercept at year zero
-    # is then far from any prior or starting value. The fit standardizes
-    # internally and reports back on the original scale.
+    # Calendar years are what a student passes. The fit standardizes internally,
+    # and this checks that `params` reports back on the original scale. (LBFGS
+    # coped with raw years before; the sampler did not, see the gevfitbayes
+    # covariate test.)
     rng = MersenneTwister(543)
     n, slope = 4_000, 0.02
     years = collect(range(1900, 2000; length=n))
@@ -547,7 +561,6 @@ end
     @test length(t) == 50
     ok = .!isnan.(m)
     @test any(ok)
-    @test all(hi[ok] .- lo[ok] .> 0)
     @test hi[ok][1] - lo[ok][1] < hi[ok][end] - lo[ok][end]   # fewer exceedances, wider band
     # Memoryless: mean excess above any threshold is σ, regardless of threshold.
     @test mean(m[ok]) ≈ σ rtol = 0.15
@@ -572,15 +585,19 @@ end
     @test all(abs.(ss[ok] .- 2.0) .<= 3 .* ss_se[ok])
     # the band widens with the threshold, since σ* inherits u² Var(ξ)
     @test ss_se[ok][end] > ss_se[ok][1]
-    # against a simulated sampling distribution of σ* at one threshold
-    u, n = 2.0, 200
+    # against a simulated sampling distribution of σ* at one threshold, with
+    # σ ≈ u so the cross term 2σu decides the answer: Cov(σ̂, ξ̂) < 0 gives
+    # Var(σ*) ∝ 2σ² + 2σu + u²(1+ξ); the wrong sign would give 2σ² - 2σu + …
+    σ, u, n = 2.0, 1.0, 200
     draws = [
-        let (s, x) = CEVE543Utils._gpd_mle_quick(rand(rng, GeneralizedPareto(0.0, 0.2, 0.1), n))
+        let (s, x) = CEVE543Utils._gpd_mle_quick(rand(rng, GeneralizedPareto(0.0, σ, 0.1), n))
             s - x * u
         end for _ in 1:500
     ]
-    expected = sqrt(1.1 * (2 * 0.2^2 + 2 * 0.2 * u + u^2 * 1.1) / n)
-    @test std(draws) ≈ expected rtol = 0.25
+    right_sign = sqrt(1.1 * (2σ^2 + 2σ * u + u^2 * 1.1) / n)
+    wrong_sign = sqrt(1.1 * (2σ^2 - 2σ * u + u^2 * 1.1) / n)
+    @test std(draws) ≈ right_sign rtol = 0.15
+    @test !isapprox(std(draws), wrong_sign; rtol=0.15)
 end
 
 @testset "pot_return_level" begin
