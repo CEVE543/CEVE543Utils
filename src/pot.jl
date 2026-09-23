@@ -6,9 +6,12 @@ using Dates: DateTime
 """
     decluster(times, levels, threshold; min_gap_hours=72) -> (peak_idx, excesses)
 
-Group consecutive exceedances of `threshold` into clusters separated by at least
-`min_gap_hours` below the threshold, and return the index and excess (level minus
-threshold) of each cluster maximum.
+Group exceedances of `threshold` into clusters, starting a new cluster whenever
+more than `min_gap_hours` pass between one exceedance and the next, and return
+the index and excess (level minus threshold) of each cluster maximum.
+
+The gap is measured between timestamps, so a stretch of missing readings counts
+as time spent below the threshold.
 
 Works on hourly (or sub-hourly) time series where `times` is a `Vector{DateTime}`.
 For daily data without timestamps, use [`decluster_daily`](@ref).

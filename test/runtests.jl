@@ -150,7 +150,10 @@ end
     @test d.μ == threshold          # the level comes back, not the exceedance
     @test d.σ ≈ truth.σ rtol = 0.08
     @test d.ξ ≈ truth.ξ atol = 0.05
-    @test only(returnlevel(fit, 50)) > threshold
+    # a POT fit's return period is in years only once it knows the rate
+    @test only(returnlevel(fit, 50; rate=5.0)) ≈ pot_return_level(50, threshold, d.σ, d.ξ, 5.0)
+    @test only(returnlevel(fit, 50; rate=5.0)) == returnlevel(d, 50; rate=5.0)
+    @test_throws ArgumentError returnlevel(fit, 50)
 
     @test_throws ArgumentError gpfit([1.0, 2.0], 99.0)
 end
@@ -179,6 +182,45 @@ end
 
     # a posterior is not a point estimate, and says so rather than guessing
     @test_throws ArgumentError params(fit)
+
+    # one stationary distribution per draw, matching the chain
+    draws = posterior_distributions(fit)
+    @test length(draws) == 400 * 2
+    @test all(d -> length(d) == 1, draws)
+    @test median(only(d).σ for d in draws) ≈ truth.σ rtol = 0.10
+    @test returnlevel(only(first(draws)), 100) ≈ quantile(only(first(draws)), 0.99)
+
+    # a point estimate has no draws
+    @test_throws ArgumentError posterior_distributions(gevfit(y))
+end
+
+@testset "posterior_distributions with covariates" begin
+    rng = MersenneTwister(543)
+    n = 300
+    # centred and scaled, since NUTS does not converge on a raw 1:300 covariate
+    x = collect(range(-1, 1; length=n))
+    y = [rand(rng, GeneralizedExtremeValue(4.0 + 0.5 * xᵢ, 0.8, 0.1)) for xᵢ in x]
+    fit = gevfitbayes(y; locationcov=[x], n_samples=200, n_chains=2, rng=rng)
+
+    draws = posterior_distributions(fit)
+    @test length(draws) == 200 * 2
+    @test all(d -> length(d) == n, draws)      # one distribution per row, per draw
+    # the location climbs across the record by the slope times the covariate's span
+    @test median(last(d).μ - first(d).μ for d in draws) ≈ 1.0 rtol = 0.3
+end
+
+@testset "gpfitbayes and posterior_distributions" begin
+    threshold = 10.0
+    truth = GeneralizedPareto(threshold, 2.0, 0.2)
+    y = rand(MersenneTwister(543), truth, 1_000)
+    fit = gpfitbayes(y, threshold; n_samples=300, n_chains=2, rng=MersenneTwister(543))
+
+    draws = posterior_distributions(fit)
+    @test length(draws) == 300 * 2
+    @test all(d -> only(d).μ == threshold, draws)
+    @test median(only(d).σ for d in draws) ≈ truth.σ rtol = 0.10
+    levels = [returnlevel(only(d), 100; rate=3.0) for d in draws]
+    @test all(>(threshold), levels)
 end
 
 @testset "detrend_baseline and recentre" begin
@@ -261,6 +303,43 @@ end
     # A year with too few readings is dropped rather than half-counted.
     @test_throws ArgumentError AnnMaxRecord(record; min_readings=10_000)
     @test_throws ArgumentError AnnMaxRecord(record; detrend=:quadratic)
+end
+
+@testset "detrend removes the trend from every reading" begin
+    station = Station("test")
+    # Four years of six-hourly readings on a sea rising 0.1 m per year.
+    times, levels = DateTime[], Float64[]
+    for (i, yr) in enumerate(2000:2003), day in 1:365, hour in (0, 6, 12, 18)
+        push!(times, DateTime(yr, 1, 1) + Day(day - 1) + Hour(hour))
+        push!(levels, 0.1 * (i - 1) + sin(day / 58) * 0.5)
+    end
+    record = WaterLevelRecord(station, times, levels, u"ft")
+
+    for method in (:msl, :linear)
+        flat = detrend(record; method=method, min_readings=1_000)
+        @test unit(first(waterlevels(flat))) == u"ft"      # the unit is kept
+        @test length(flat) == length(record)
+        yearly = [mean(flat.levels[year.(obstimes(flat)) .== yr]) for yr in 2000:2003]
+        @test all(≈(yearly[end]), yearly)                   # every year now sits level
+        # re-centred on the last five years, which here is all four of them
+        @test yearly[end] ≈ mean(levels) atol = 1e-8
+    end
+
+    unchanged = detrend(record; method=:none, min_readings=1_000)
+    @test unchanged.levels ≈ record.levels
+
+    # the annual maxima of the detrended readings carry no trend either
+    annmax = AnnMaxRecord(detrend(record; min_readings=1_000); detrend=:none, min_readings=1_000)
+    @test all(≈(annmax.levels[1]), annmax.levels)
+
+    # a sparse year is dropped, so the kept years count the record length
+    partial = WaterLevelRecord(
+        station, vcat(times, [DateTime(2004, 1, 1)]), vcat(levels, [0.0]), u"ft"
+    )
+    @test unique(year.(obstimes(detrend(partial; min_readings=1_000)))) == 2000:2003
+
+    @test_throws ArgumentError detrend(record; method=:quadratic)
+    @test_throws ArgumentError detrend(record; min_readings=10_000)
 end
 
 @testset "DataFrame(record)" begin

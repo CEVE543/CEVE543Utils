@@ -1,6 +1,6 @@
 name = "CEVE543Utils"
 uuid = "9cb47f62-1030-411a-9180-bf3a9ffb897b"
-version = "0.4.2"
+version = "0.5.0"
 authors = ["James Doss-Gollin <jdossgollin@rice.edu>"]
 
 [deps]

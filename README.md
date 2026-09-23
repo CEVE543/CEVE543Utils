@@ -21,7 +21,10 @@ fit = gevfit(df, :lsl; locationcovid=[:year])   # location moves with the year
 getdistribution(fit)                            # one distribution per row
 
 fit = gpfit(discharge, 500.0)                   # peaks over a threshold
+returnlevel(fit, 100; rate=2.5)                 # needs exceedances per year
+
 fit = gevfitbayes(annmax)                       # posterior instead of a point
+posterior_distributions(fit)                    # one distribution per draw
 ```
 
 ## Installing

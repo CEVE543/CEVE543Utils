@@ -21,7 +21,7 @@ those start at zero, so styling an empty axis pins the horizontal limits to the
 span of `ticks` and gives up autoscaling.
 """
 function CEVE543Utils.return_period_axis!(ax; ticks=TICKS)
-    ax.xlabel = "return period T (years)"
+    ax.xlabel = L"\text{return period } T \text{ (years)}"
     ax.xticks = (ticks, string.(ticks))
     isempty(ax.scene.plots) && xlims!(ax, extrema(ticks)...)
     ax.xscale = log10
@@ -66,10 +66,10 @@ function CEVE543Utils.stability_plot(values; figsize=(800, 500), kwargs...)
     colors = Makie.wong_colors()
     t, ss, xi, ss_se, xi_se = stability_data(values; kwargs...)
     fig = Figure(; size=figsize)
-    ax1 = Axis(fig[1, 1]; ylabel="σ* = σᵤ - ξu")
+    ax1 = Axis(fig[1, 1]; ylabel=L"\sigma^* = \sigma_u - \xi u")
     band!(ax1, t, ss .- 1.96 .* ss_se, ss .+ 1.96 .* ss_se; color=(colors[1], 0.2))
     scatter!(ax1, t, ss; color=colors[1], markersize=5)
-    ax2 = Axis(fig[2, 1]; xlabel="Threshold", ylabel="ξ")
+    ax2 = Axis(fig[2, 1]; xlabel="Threshold", ylabel=L"\xi")
     band!(ax2, t, xi .- 1.96 .* xi_se, xi .+ 1.96 .* xi_se; color=(colors[2], 0.2))
     scatter!(ax2, t, xi; color=colors[2], markersize=5)
     return fig

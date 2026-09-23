@@ -264,6 +264,61 @@ function AnnMaxRecord(
 end
 
 """
+    detrend(record; method=:msl, min_readings=6_000) -> WaterLevelRecord
+
+Remove the sea-level trend from every hourly reading, for a peaks over
+threshold analysis that works on the readings rather than on the annual maxima.
+
+`method` is one of $DETREND_METHODS:
+
+- `:msl` subtracts each year's own mean reading from every reading in that year.
+- `:linear` fits a straight line to the annual mean readings by ordinary least
+  squares and subtracts its value for each reading's year. This differs from
+  `:linear` in [`AnnMaxRecord`](@ref), which fits the line to the annual maxima.
+- `:none` subtracts nothing.
+
+Either way the result is re-centred with [`recentre`](@ref), so it reads as
+present-day sea level, and it keeps the unit of `record`.
+
+Years with fewer than `min_readings` readings are dropped, as in
+[`AnnMaxRecord`](@ref), so the number of distinct years left is the record
+length an exceedance rate should be computed over:
+
+    detrended = detrend(load_water_level("8638610"); method=:msl)
+    n_years = length(unique(year.(obstimes(detrended))))
+
+`AnnMaxRecord(detrended; detrend=:none)` takes annual maxima from the same
+detrended readings, so a GEV and a GPD can be fitted to one record.
+"""
+function detrend(record::WaterLevelRecord; method::Symbol=:msl, min_readings::Integer=6_000)
+    method in DETREND_METHODS ||
+        throw(ArgumentError("method must be one of $DETREND_METHODS, got :$method"))
+
+    rows = Dict{Int,Vector{Float64}}()
+    for (t, level) in zip(record.times, record.levels)
+        push!(get!(rows, year(t), Float64[]), level)
+    end
+    kept = sort([y for (y, vals) in rows if length(vals) >= min_readings])
+    isempty(kept) && throw(
+        ArgumentError(
+            "no year in this record has $min_readings readings; lower min_readings " *
+            "if it is not hourly",
+        ),
+    )
+
+    msl = [mean(rows[y]) for y in kept]
+    # The annual means stand in for the maxima here, so `:linear` fits the means.
+    trend = detrend_baseline(kept, msl, msl, method)
+    offset = recentre(trend)
+    by_year = Dict(zip(kept, trend))
+
+    keep = findall(t -> haskey(by_year, year(t)), record.times)
+    times = record.times[keep]
+    levels = [record.levels[i] - by_year[year(record.times[i])] + offset for i in keep]
+    return WaterLevelRecord(record.station, times, levels, record.unit)
+end
+
+"""
     DataFrame(record; keep_units=false)
 
 A record as a table, one row per reading.
