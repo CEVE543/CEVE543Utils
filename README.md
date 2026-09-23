@@ -40,5 +40,19 @@ CEVE543Utils = "9cb47f62-1030-411a-9180-bf3a9ffb897b"
 CEVE543Utils = {url = "https://github.com/CEVE543/CEVE543Utils"}
 ```
 
-Makie is a weak dependency: `plotting_positions` is always available, and
-`return_period_axis!` appears once you load a backend.
+## Tide gauges and peaks over threshold
+
+`load_water_level` downloads a NOAA CO-OPS station's hourly record, `AnnMaxRecord` takes its annual maxima and `detrend` removes the sea-level trend from every reading.
+Annual blocks are UTC calendar years.
+
+```julia
+record = load_water_level("8638610")                 # Sewells Point, VA, cached locally
+annmax = AnnMaxRecord(record; detrend=:msl)          # one maximum per full year
+peaks, excess = decluster(obstimes(record), record.levels, 1.0)   # clusters 72 h apart
+mrl_data(record.levels)                              # mean residual life against threshold
+stability_data(record.levels)                        # GPD parameters against threshold
+```
+
+Makie is a weak dependency.
+`plotting_positions` is always available.
+`return_period_axis!`, `return_period_axis`, `mrl_plot` and `stability_plot` appear once you load a backend.

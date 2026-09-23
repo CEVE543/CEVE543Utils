@@ -24,8 +24,10 @@ Levels carry Unitful units, and `ustrip` hands plain numbers to a fit:
 
 Station ids are listed at <https://tidesandcurrents.noaa.gov/stations.html>.
 
-Plot helpers live in an extension: `plotting_positions` is always available, and
-`return_period_axis!` appears once Makie is loaded.
+Peaks over threshold diagnostics are `decluster`, `mrl_data`, `stability_data`
+and `pot_return_level`. Plot helpers live in an extension: `plotting_positions`
+is always available, and `return_period_axis!`, `mrl_plot` and `stability_plot`
+appear once Makie is loaded.
 """
 module CEVE543Utils
 

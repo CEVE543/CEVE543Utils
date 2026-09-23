@@ -6,9 +6,10 @@
 # 2020) with thanks.
 
 using SpecialFunctions: gamma
+using Base.MathConstants: eulergamma
 
 """
-    pwm(y, p, r, s) -> Float64
+    pwm(y, p, r, s)
 
 Empirical probability weighted moment ``M_{p,r,s}`` using the unbiased
 estimator of Landwehr, Matalas & Wallis (1979).
@@ -32,18 +33,25 @@ Returns a `Distributions.GeneralizedExtremeValue`. This is a stationary,
 closed-form estimator: no iteration, no priors, no optimizer. It gives a
 different answer from MLE, and comparing the two is one reason to show it.
 
-Algorithm: Hosking et al. (1985), polynomial approximation for the shape.
+Algorithm: Hosking et al. (1985); the polynomial for the shape holds for
+`-0.5 <= ξ <= 0.5`. Requires `length(y) >= 3`.
 """
 function gevfit_lmom(y::AbstractVector{<:Real})
+    length(y) >= 3 || throw(
+        ArgumentError("gevfit_lmom needs at least 3 observations, got $(length(y))")
+    )
     b0 = pwm(y, 1, 0, 0)
     b1 = pwm(y, 1, 1, 0)
     b2 = pwm(y, 1, 2, 0)
 
     c = (2b1 - b0) / (3b2 - b0) - log(2) / log(3)
     k = 7.8590c + 2.9554c^2
+    if abs(k) < 1e-8
+        # Gumbel limit: σ = λ₂ / log 2, μ = λ₁ - γσ
+        σ = (2b1 - b0) / log(2)
+        return GeneralizedExtremeValue(b0 - eulergamma * σ, σ, 0.0)
+    end
     σ = k * (2b1 - b0) / ((1 - 2^(-k)) * gamma(1 + k))
     μ = b0 - σ / k * (1 - gamma(1 + k))
-    ξ = -k
-
-    return GeneralizedExtremeValue(μ, σ, ξ)
+    return GeneralizedExtremeValue(μ, σ, -k)
 end

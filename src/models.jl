@@ -22,6 +22,22 @@ function design_matrix(n::Integer, covariates)
     return hcat(ones(n), reduce(hcat, [collect(Float64, c) for c in cols]))
 end
 
+"""
+    standardize(X) -> (X, center, scale)
+
+Replace each covariate column `x` of a design matrix by `(x - mean(x)) / std(x)`,
+leaving the intercept column alone. A constant column gets `scale = 1`.
+[`params`](@ref) uses `center` and `scale` to undo the transform.
+"""
+function standardize(X::AbstractMatrix)
+    center = vec(mean(X[:, 2:end]; dims=1))
+    scale = vec(std(X[:, 2:end]; dims=1))
+    scale[scale .== 0] .= 1
+    Z = copy(X)
+    Z[:, 2:end] .= (X[:, 2:end] .- center') ./ scale'
+    return (X=Z, center=center, scale=scale)
+end
+
 # One row of `X * β`, written as a scalar loop. `X * β` inside an automatic
 # differentiation pass allocates a fresh dual array on every gradient
 # evaluation, which is what makes the obvious nonstationary model crawl.

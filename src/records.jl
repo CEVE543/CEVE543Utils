@@ -218,7 +218,7 @@ trend.
 A year's maximum is the largest reading that falls in it. `detrend` is one of
 $DETREND_METHODS and is described in [`detrend_baseline`](@ref); `:msl` uses each
 year's own mean reading as the baseline, which is what the raw record makes
-available.
+available. Years are UTC calendar years.
 
     AnnMaxRecord(load_water_level("8638610"); detrend=:msl)
 

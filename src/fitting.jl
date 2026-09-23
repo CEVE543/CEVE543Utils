@@ -3,8 +3,8 @@
 """
 A fitted extreme value model.
 
-`family` is `:gev` or `:gp`, `Xs` holds the design matrix used for each
-parameter, and `estimate` is what Turing returned: a `ModeResult` from
+`family` is `:gev` or `:gp`, `Xs` holds, for each parameter, the standardized
+design matrix as `X` with its `center` and `scale`, and `estimate` is what Turing returned: a `ModeResult` from
 [`gevfit`](@ref) and [`gpfit`](@ref), a chain from [`gevfitbayes`](@ref) and
 [`gpfitbayes`](@ref).
 """
@@ -19,35 +19,53 @@ end
 """
     params(fit) -> NamedTuple
 
-The fitted coefficients for each parameter, intercept first.
+The fitted coefficients for each parameter, intercept first, on the scale of the
+covariates as passed in. The fit works on standardized covariates
+`z = (x - c) / s`, so `fit.estimate` holds `β` with `β₀ + Σ βⱼ zⱼ`; this returns
+the equivalent `(β₀ - Σ βⱼ cⱼ / sⱼ, β₁ / s₁, …)`.
 
-Defined for the point estimates. A fit from [`gevfitbayes`](@ref) or
-[`gpfitbayes`](@ref) holds a whole posterior rather than one value per
-coefficient, so reach for `fit.estimate`, which is the chain.
+Point estimates only; for a posterior use [`posterior_distributions`](@ref).
 """
 function params(fit::EVAFit)
+    raw = _raw_params(fit)
+    return NamedTuple{keys(raw)}(
+        Tuple(_original_scale(raw[k], fit.Xs[_design_key(k)]) for k in keys(raw))
+    )
+end
+
+# The coefficients as the optimizer left them, on the standardized scale.
+function _raw_params(fit::EVAFit)
     fit.estimate isa Turing.Optimisation.ModeResult || throw(
         ArgumentError(
             "this fit holds a posterior sample rather than a point estimate; " *
-            "use `fit.estimate` to get the chain",
+            "use `posterior_distributions`",
         ),
     )
     return NamedTuple(fit.estimate.params)
 end
 
-_stationary(fit::EVAFit) = all(X -> size(X, 2) == 1, values(fit.Xs))
+# `β_location` was fitted against `Xs.location`, and so on.
+_design_key(name::Symbol) = Symbol(chopprefix(string(name), "β_"))
+
+function _original_scale(β, design)
+    slopes = β[2:end] ./ design.scale
+    return vcat(β[1] - sum(slopes .* design.center), slopes)
+end
+
+_stationary(fit::EVAFit) = all(d -> size(d.X, 2) == 1, values(fit.Xs))
 
 """
     getdistribution(fit) -> Vector{<:Distribution}
 
-One distribution per observation, in the order the data came in.
+One distribution per observation, in the order the data came in; for a peaks
+over threshold fit, one per exceedance.
 
 A stationary fit gives every observation the same distribution, so the vector
 has length one and `only(getdistribution(fit))` is the distribution. That is the
 shape Extremes.jl returns, and the reason it is a vector at all is that a fit
 with covariates has a different distribution at every row.
 """
-getdistribution(fit::EVAFit) = _distributions(fit, params(fit))
+getdistribution(fit::EVAFit) = _distributions(fit, _raw_params(fit))
 
 """
     posterior_distributions(fit) -> Vector{Vector{<:Distribution}}
@@ -85,17 +103,17 @@ function _distributions(fit::EVAFit, β)
     if fit.family === :gev
         return [
             GeneralizedExtremeValue(
-                row_value(fit.Xs.location, i, β.β_location),
-                exp(row_value(fit.Xs.logscale, i, β.β_logscale)),
-                row_value(fit.Xs.shape, i, β.β_shape),
+                row_value(fit.Xs.location.X, i, β.β_location),
+                exp(row_value(fit.Xs.logscale.X, i, β.β_logscale)),
+                row_value(fit.Xs.shape.X, i, β.β_shape),
             ) for i in rows
         ]
     end
     return [
         GeneralizedPareto(
             fit.threshold,
-            exp(row_value(fit.Xs.logscale, i, β.β_logscale)),
-            row_value(fit.Xs.shape, i, β.β_shape),
+            exp(row_value(fit.Xs.logscale.X, i, β.β_logscale)),
+            row_value(fit.Xs.shape.X, i, β.β_shape),
         ) for i in rows
     ]
 end
@@ -142,23 +160,27 @@ returnlevel(d::GeneralizedPareto, T; rate) = pot_return_level(T, d.μ, d.σ, d.�
 """
     loglike(fit) -> Real
 
-The log density at the fitted parameters.
+The log likelihood at the point estimate. Point estimates only.
 """
-loglike(fit::EVAFit) = fit.estimate.lp
+function loglike(fit::EVAFit)
+    fit.estimate isa Turing.Optimisation.ModeResult || throw(
+        ArgumentError("loglike is defined for a point estimate; this fit holds a posterior sample")
+    )
+    return fit.estimate.lp
+end
 
 # Every slope starts at zero and every intercept at a moment estimate, so the
 # optimizer opens on the stationary fit whatever the covariates are.
 #
-# The shape is the exception: it starts a little away from zero. Both densities
-# fall back to their ξ = 0 limit near zero, and neither limit contains ξ, so the
-# gradient with respect to the shape is identically zero there. Starting exactly
-# at zero means the optimizer reports success without ever having moved it.
+# The shape is the exception: it starts a little away from zero. The densities
+# keep a derivative in ξ through zero (see `log1p_over`), but the likelihood is
+# flat enough there that an optimizer started exactly at zero can stop early.
 const SHAPE_INIT = 0.1
 
-_zeros(X) = zeros(size(X, 2))
+_zeros(design) = zeros(size(design.X, 2))
 
-function _shape_start(X)
-    β = zeros(size(X, 2))
+function _shape_start(design)
+    β = zeros(size(design.X, 2))
     β[1] = SHAPE_INIT
     return β
 end
@@ -179,9 +201,9 @@ end
 
 function _gev_matrices(n, loc, logscale, shape)
     return (
-        location=design_matrix(n, loc),
-        logscale=design_matrix(n, logscale),
-        shape=design_matrix(n, shape),
+        location=standardize(design_matrix(n, loc)),
+        logscale=standardize(design_matrix(n, logscale)),
+        shape=standardize(design_matrix(n, shape)),
     )
 end
 
@@ -189,16 +211,19 @@ function _exceedances(y, threshold, logscalecov, shapecov)
     keep = findall(>(threshold), y)
     isempty(keep) && throw(ArgumentError("no values above threshold $threshold"))
     excess = y[keep] .- threshold
-    sub(c) = isnothing(c) ? nothing : [collect(v)[keep] for v in c]
+    sub(c) = isnothing(c) ? nothing : [collect(v)[keep] for v in _covariate_columns(c)]
     Xs = (
-        logscale=design_matrix(length(excess), sub(logscalecov)),
-        shape=design_matrix(length(excess), sub(shapecov)),
+        logscale=standardize(design_matrix(length(excess), sub(logscalecov))),
+        shape=standardize(design_matrix(length(excess), sub(shapecov))),
     )
     return excess, Xs
 end
 
+_covariate_columns(c::AbstractMatrix) = eachcol(c)
+_covariate_columns(c) = c
+
 """
-    gevfit(y; locationcov, logscalecov, shapecov, prior_scale, kwargs...)
+    gevfit(y; locationcov, logscalecov, shapecov, kwargs...)
 
 Fit a generalized extreme value distribution to block maxima by maximum
 likelihood, through Turing's mode estimation.
@@ -216,18 +241,18 @@ function gevfit(
     locationcov=nothing,
     logscalecov=nothing,
     shapecov=nothing,
-    prior_scale=100.0,
     kwargs...,
 )
     y = collect(Float64, y)
     Xs = _gev_matrices(length(y), locationcov, logscalecov, shapecov)
-    model = gev_model(y, Xs.location, Xs.logscale, Xs.shape, prior_scale)
+    # `maximum_likelihood` ignores the prior; 1.0 is a placeholder.
+    model = gev_model(y, Xs.location.X, Xs.logscale.X, Xs.shape.X, 1.0)
     estimate = maximum_likelihood(model; initial_params=_gev_init(y, Xs), kwargs...)
     return EVAFit(:gev, y, Xs, NaN, estimate)
 end
 
 """
-    gpfit(y, threshold; logscalecov, shapecov, prior_scale, kwargs...)
+    gpfit(y, threshold; logscalecov, shapecov, kwargs...)
 
 Fit a generalized Pareto distribution to the amounts by which `y` exceeds
 `threshold`, by maximum likelihood.
@@ -242,12 +267,12 @@ function gpfit(
     threshold::Real;
     logscalecov=nothing,
     shapecov=nothing,
-    prior_scale=100.0,
     kwargs...,
 )
     y = collect(Float64, y)
     excess, Xs = _exceedances(y, threshold, logscalecov, shapecov)
-    model = gp_model(excess, Xs.logscale, Xs.shape, prior_scale)
+    # `maximum_likelihood` ignores the prior; 1.0 is a placeholder.
+    model = gp_model(excess, Xs.logscale.X, Xs.shape.X, 1.0)
     estimate = maximum_likelihood(model; initial_params=_gp_init(excess, Xs), kwargs...)
     return EVAFit(:gp, excess, Xs, Float64(threshold), estimate)
 end
@@ -257,13 +282,15 @@ end
 
 Sample the posterior with NUTS instead of taking a point estimate.
 
-The model, the covariate keywords, and the priors are the ones [`gevfit`](@ref)
-uses, so a nonstationary fit reads the same either way. `fit.estimate` is the
-chain, and [`posterior_distributions`](@ref) turns it into distributions.
+The model and the covariate keywords are the ones [`gevfit`](@ref) uses, with
+the priors below on top, so a nonstationary fit reads the same either way.
+`fit.estimate` is the chain, and [`posterior_distributions`](@ref) turns it
+into distributions.
 
-`prior_scale` is the prior variance of every location and log-scale
-coefficient, so the default of 100 is a standard deviation of 10. The shape
-coefficients have prior standard deviation 0.5.
+Covariates are standardized (see [`standardize`](@ref)), and `fit.estimate` is
+on that scale. Priors: `N(0, prior_scale)` on every location and log-scale
+coefficient, so the default 100 is a standard deviation of 10 per standard
+deviation of the covariate; `N(0, 0.25)` on the shape coefficients.
 
 `sampler` defaults to `NUTS()`. The GEV support moves with its parameters, so
 divergences are common at the default step size; `sampler=NUTS(0.99)` takes
@@ -283,7 +310,7 @@ function gevfitbayes(
 )
     y = collect(Float64, y)
     Xs = _gev_matrices(length(y), locationcov, logscalecov, shapecov)
-    model = gev_model(y, Xs.location, Xs.logscale, Xs.shape, prior_scale)
+    model = gev_model(y, Xs.location.X, Xs.logscale.X, Xs.shape.X, prior_scale)
     chain = sample(rng, model, sampler, MCMCThreads(), n_samples, n_chains; kwargs...)
     return EVAFit(:gev, y, Xs, NaN, chain)
 end
@@ -312,7 +339,7 @@ function gpfitbayes(
 )
     y = collect(Float64, y)
     excess, Xs = _exceedances(y, threshold, logscalecov, shapecov)
-    model = gp_model(excess, Xs.logscale, Xs.shape, prior_scale)
+    model = gp_model(excess, Xs.logscale.X, Xs.shape.X, prior_scale)
     chain = sample(rng, model, sampler, MCMCThreads(), n_samples, n_chains; kwargs...)
     return EVAFit(:gp, excess, Xs, Float64(threshold), chain)
 end

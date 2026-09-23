@@ -71,6 +71,7 @@ a limit rather than a branch.
 @inline function gp_logpdf(y, σ, ξ)
     σ <= 0 && return oftype(σ / one(y), -Inf)
     z = y / σ
+    z < 0 && return oftype(z, -Inf)   # support is y >= 0
     u = ξ * z
     u <= -1 && return oftype(u, -Inf)
     return -log(σ) - log1p(u) - log1p_over(z, ξ)

@@ -1,7 +1,6 @@
 module CEVE543UtilsMakieExt
 
 using CEVE543Utils: CEVE543Utils, mrl_data, stability_data
-using Makie: Axis, Figure, band!, lines!, scatter!, xlims!
 using Makie
 
 const TICKS = [1, 2, 5, 10, 25, 100, 1000]

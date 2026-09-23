@@ -22,6 +22,7 @@ function decluster(
     threshold::Real;
     min_gap_hours::Real=72,
 )
+    issorted(times) || throw(ArgumentError("times must be in increasing order"))
     exceed_idx = findall(>(threshold), levels)
     isempty(exceed_idx) && return (Int[], Float64[])
     clusters = Vector{Vector{Int}}()
@@ -66,13 +67,14 @@ function decluster_daily(
 end
 
 """
-    mrl_data(values; n_thresholds=80, lo_quantile=0.5, hi_quantile=0.995)
+    mrl_data(values; n_thresholds=80, lo_quantile=0.5, hi_quantile=0.995, lo, hi, min_count=5)
 
-Compute the mean residual life at a grid of thresholds.
+Mean residual life \$E[X - u \\mid X > u]\$ on a grid of `n_thresholds` values of
+\$u\$ from the `lo_quantile` to the `hi_quantile` of `values`, or from `lo` to `hi`.
 
-Returns `(thresholds, means, lower, upper)` where `lower` and `upper` are
-pointwise 95% confidence bounds. Thresholds with fewer than 5 exceedances
-produce `NaN`.
+Returns `(thresholds, means, lower, upper)`; `lower` and `upper` are
+\$m \\pm 1.96\\, s/\\sqrt{n}\$. Thresholds with fewer than `min_count` exceedances
+give `NaN`.
 """
 function mrl_data(
     values::AbstractVector{<:Real};
@@ -110,7 +112,8 @@ end
     stability_data(values; n_thresholds=40, lo_quantile=0.5, hi_quantile=0.98)
 
 Fit the GPD at a grid of thresholds and return the reparameterized scale
-\$\\sigma^* = \\sigma_u - \\xi u\$ and the shape \$\\xi\$ with approximate standard errors.
+\$\\sigma^* = \\sigma_u - \\xi u\$ and the shape \$\\xi\$ with delta-method standard errors
+(Coles 2001, §4.3.4; valid for \$\\xi > -0.5\$).
 
 Returns `(thresholds, sigma_star, xi, sigma_star_se, xi_se)`. Thresholds where
 the fit fails or has fewer than 10 exceedances produce `NaN`.
@@ -141,7 +144,8 @@ function stability_data(
             n = length(exc)
             sigma_star[k] = sigma - xi * u
             xis[k] = xi
-            sigma_star_se[k] = sigma / sqrt(n)
+            # delta method: Var(σ*) = [1, -u] V [1, -u]ᵀ, V = (1+ξ)/n [2σ² -σ; -σ 1+ξ]
+            sigma_star_se[k] = sqrt((1 + xi) * (2sigma^2 + 2sigma * u + u^2 * (1 + xi)) / n)
             xi_se[k] = (1 + xi) / sqrt(n)
         catch
             sigma_star[k] = xis[k] = sigma_star_se[k] = xi_se[k] = NaN

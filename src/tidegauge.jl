@@ -8,7 +8,7 @@
 
 using CSV: CSV
 using Dates: DateTime, @dateformat_str, year, today
-using Downloads: download
+using Downloads: download, RequestError
 using Unitful: @u_str
 
 const COOPS_API = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
@@ -23,7 +23,7 @@ const DETREND_METHODS = (:linear, :msl, :none)
 Download hourly water levels from NOAA CO-OPS tide gauge `station`.
 
 Returns a [`WaterLevelRecord`](@ref) carrying the station and one reading per
-hour, in metres above the requested datum.
+hour, in metres above the requested datum, timestamped in UTC.
 
     record = load_water_level("8638610")          # Sewells Point, VA
     annmax = AnnMaxRecord(record; detrend=:msl)
@@ -32,25 +32,27 @@ Station ids are listed at $COOPS_STATIONS.
 
 A long record is a large download: the API serves one year per request, so a
 century of hourly readings is around 80 requests and 30 MB, and takes a minute
-or two. It is cached, so that cost is paid once.
+or two. It is cached, so that cost is paid once. An incomplete download is not
+cached.
 
 # Keywords
 
 - `cache`: path to a CSV to read instead of the network, and to write after a
-  download. `nothing` disables caching. Defaults to `"<station>-hourly.csv"`,
-  which resolves against the working directory, so pass an absolute path built
-  with `@__DIR__` to get the same file from a notebook and from the REPL.
+  download. `nothing` disables caching. Defaults to
+  `"<station>-<datum>-<first_year>-<last_year>-hourly.csv"` in the working
+  directory; pass an absolute path built with `@__DIR__` to share one file
+  between a notebook and the REPL.
 - `first_year`, `last_year`: the period to request.
 - `datum`: the vertical reference, `"MSL"` by default.
 - `name`: how to label the station in output.
 """
 function load_water_level(
     station::AbstractString;
-    cache=default_cache(station),
     first_year::Integer=1928,
     last_year::Integer=year(today()),
     datum::AbstractString="MSL",
     name::AbstractString="",
+    cache=default_cache(station, datum, first_year, last_year),
 )
     meta = Station(station; name=name, datum=datum)
 
@@ -70,8 +72,18 @@ function load_water_level(
     end
 
     times, levels = DateTime[], Float64[]
+    failed = Int[]
     for yr in first_year:last_year
-        append_year!(times, levels, station, yr, datum)
+        append_year!(times, levels, station, yr, datum) || push!(failed, yr)
+        # three consecutive failures: the network is down, stop waiting
+        if length(failed) >= 3 && failed[(end - 2):end] == [yr - 2, yr - 1, yr]
+            throw(
+                ArgumentError(
+                    "downloads for $station failed for $(failed[end - 2])-$yr; " *
+                    "check the network connection and try again",
+                ),
+            )
+        end
     end
     isempty(levels) && throw(
         ArgumentError(
@@ -82,21 +94,29 @@ function load_water_level(
 
     order = sortperm(times)
     times, levels = times[order], levels[order]
-    cache === nothing || CSV.write(cache, (time=times, level_m=levels))
+    if cache !== nothing
+        if isempty(failed)
+            CSV.write(cache, (time=times, level_m=levels))
+        else
+            @warn "not caching $station: the download skipped $(length(failed)) year(s)" failed
+        end
+    end
     # The API serves metric, which is why the record is in metres whatever the
     # annual maxima are later converted to.
     return WaterLevelRecord(meta, times, levels, u"m")
 end
 
-default_cache(station::AbstractString) = "$station-hourly.csv"
+default_cache(station, datum, first_year, last_year) =
+    "$station-$datum-$first_year-$last_year-hourly.csv"
 
 has_columns(file, wanted) = all(c -> c in propertynames(file), wanted)
 
 """
-    append_year!(times, levels, station, yr, datum)
+    append_year!(times, levels, station, yr, datum) -> Bool
 
 Download one year of hourly readings and append them. A year the gauge did not
-report adds nothing rather than raising, since a long record routinely has gaps.
+report appends nothing and still returns `true`; `false` means the download
+failed three times.
 """
 function append_year!(
     times::Vector{DateTime},
@@ -116,9 +136,10 @@ function append_year!(
             body = sprint(io -> download(url, io))
             break
         catch err
+            err isa RequestError || rethrow()
             attempt < 3 && (sleep(2^attempt); continue)
             @warn "station $station year $yr: download failed after 3 attempts, skipping" err
-            return nothing
+            return false
         end
     end
 
@@ -126,7 +147,7 @@ function append_year!(
     # header, so that `row.Water_Level` resolves. A year outside the gauge's
     # record answers with a header and nothing else, which has no columns.
     table = CSV.File(IOBuffer(body); normalizenames=true)
-    has_columns(table, (:Date_Time, :Water_Level)) || return nothing
+    has_columns(table, (:Date_Time, :Water_Level)) || return true
 
     # A gap in the record arrives as a blank cell, which CSV.jl gives as
     # `missing`. Anything else that fails to convert is a change in the
@@ -136,7 +157,7 @@ function append_year!(
         push!(times, DateTime(row.Date_Time, dateformat"yyyy-mm-dd HH:MM"))
         push!(levels, Float64(row.Water_Level))
     end
-    return nothing
+    return true
 end
 
 """
@@ -166,6 +187,11 @@ function detrend_baseline(
 )
     method === :none && return zeros(float(eltype(annmax)), length(annmax))
     if method === :linear
+        length(years) < 2 && throw(
+            ArgumentError(
+                "linear detrending needs at least two years, got $(length(years))",
+            ),
+        )
         slope, intercept = ols(years, annmax)
         return slope .* years .+ intercept
     elseif method === :msl
