@@ -25,6 +25,8 @@ returnlevel(fit, 100; rate=2.5)                 # needs exceedances per year
 
 fit = gevfitbayes(annmax)                       # posterior instead of a point
 posterior_distributions(fit)                    # one distribution per draw
+gevfitbayes(annmax; sampler=:demczs)            # DE-MCzs, when NUTS diverges at the support edge
+thin(fit)                                       # about one draw per effective draw
 ```
 
 ## Installing

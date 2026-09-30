@@ -88,7 +88,7 @@ function posterior_distributions(fit::EVAFit)
     )
     # Turing returns a FlexiChain indexed by variable name, and each entry is the
     # whole coefficient vector for one draw.
-    names = fit.family === :gev ? (:β_location, :β_logscale, :β_shape) : (:β_logscale, :β_shape)
+    names = _coefficient_names(fit.family)
     columns = [vec(chain[name]) for name in names]
     return [
         _distributions(fit, NamedTuple{names}(Tuple(c[k] for c in columns))) for
@@ -277,6 +277,58 @@ function gpfit(
     return EVAFit(:gp, excess, Xs, Float64(threshold), estimate)
 end
 
+_sampler(sampler) = sampler === :demczs ? externalsampler(DEMCzs()) : sampler
+
+_coefficient_names(family) =
+    family === :gev ? (:β_location, :β_logscale, :β_shape) : (:β_logscale, :β_shape)
+
+# The smallest tail ESS over every coefficient, as a share of the draws: NaN
+# for chains too short to estimate it, 0 for a chain that never moves.
+function _tail_share(chain, names)
+    draws = [Array(getindex.(chain[name], j)) for name in names for j in eachindex(first(chain[name]))]
+    A = stack(draws; dims=3)
+    size(A, 1) < 10 && return NaN      # the tail ESS needs 5 draws per half chain
+    share = minimum(Turing.ess(A; kind=:tail)) / (size(A, 1) * size(A, 2))
+    return isnan(share) ? 0.0 : share
+end
+
+# Thinning by ⌈1/share⌉ leaves about one draw per effective draw, up to k = 100.
+_thinning(share) = ceil(Int, 1 / max(share, 0.01))
+
+# Warn when the draws are far from independent.
+function _check_ess(chain, names)
+    share = _tail_share(chain, names)
+    (isnan(share) || share >= 0.25) && return nothing
+    k = _thinning(share)
+    @warn "the tail effective sample size is $(round(Int, 100share))% of the draws, below 25%, " *
+        "so the draws are far from independent. Keep every $(k)th draw with `thin(fit, $k)`, " *
+        "or sample again with `thinning=$k` to keep `n_samples` draws per chain; if the share " *
+        "stays low the chains may be stuck, so try `sampler=:demczs`."
+    return nothing
+end
+
+"""
+    thin(fit, k=nothing) -> EVAFit
+
+Keep every `k`th draw of each chain of a posterior fit. `k=nothing` takes
+`k = min(⌈N / ESS_tail⌉, 100)`, with `N` the number of draws and `ESS_tail` the
+smallest tail effective sample size over the coefficients; chains shorter than
+10 draws need an explicit `k`.
+"""
+function thin(fit::EVAFit, k::Union{Integer,Nothing}=nothing)
+    fit.estimate isa Turing.Optimisation.ModeResult && throw(
+        ArgumentError("this fit holds a point estimate rather than a posterior sample"),
+    )
+    names = _coefficient_names(fit.family)
+    if k === nothing
+        share = _tail_share(fit.estimate, names)
+        isnan(share) && throw(ArgumentError("chains shorter than 10 draws need an explicit `k`"))
+        k = _thinning(share)
+    end
+    n = size(fit.estimate[first(names)], 1)
+    return EVAFit(fit.family, fit.y, fit.Xs, fit.threshold, fit.estimate[iter=1:k:n])
+end
+
 """
     gevfitbayes(y; locationcov, logscalecov, shapecov, prior_scale, n_samples, n_chains, rng, sampler)
 
@@ -294,7 +346,10 @@ deviation of the covariate; `N(0, 0.25)` on the shape coefficients.
 
 `sampler` defaults to `NUTS()`. The GEV support moves with its parameters, so
 divergences are common at the default step size; `sampler=NUTS(0.99)` takes
-smaller steps and usually removes them.
+smaller steps and usually removes them. `sampler=:demczs` runs [`DEMCzs`](@ref),
+whose moves use no gradient and so do not diverge at the support edge.
+Warns when the smallest tail effective sample size over the coefficients is
+below 25% of the draws; see [`thin`](@ref).
 """
 function gevfitbayes(
     y::AbstractVector;
@@ -311,7 +366,8 @@ function gevfitbayes(
     y = collect(Float64, y)
     Xs = _gev_matrices(length(y), locationcov, logscalecov, shapecov)
     model = gev_model(y, Xs.location.X, Xs.logscale.X, Xs.shape.X, prior_scale)
-    chain = sample(rng, model, sampler, MCMCThreads(), n_samples, n_chains; kwargs...)
+    chain = sample(rng, model, _sampler(sampler), MCMCThreads(), n_samples, n_chains; kwargs...)
+    _check_ess(chain, _coefficient_names(:gev))
     return EVAFit(:gev, y, Xs, NaN, chain)
 end
 
@@ -324,7 +380,8 @@ Covariates are standardized and `fit.estimate` is on that scale, as in
 [`gevfitbayes`](@ref). Priors: `N(0, prior_scale)` on every log-scale
 coefficient, `N(0, 0.25)` on the shape coefficients. [`posterior_distributions`](@ref)
 turns the chain into distributions. `sampler` is passed to Turing's `sample` and
-defaults to `NUTS()`, as in [`gevfitbayes`](@ref).
+defaults to `NUTS()`; `sampler=:demczs` runs [`DEMCzs`](@ref), and a low
+effective sample size warns, as in [`gevfitbayes`](@ref).
 """
 function gpfitbayes(
     y::AbstractVector,
@@ -341,6 +398,7 @@ function gpfitbayes(
     y = collect(Float64, y)
     excess, Xs = _exceedances(y, threshold, logscalecov, shapecov)
     model = gp_model(excess, Xs.logscale.X, Xs.shape.X, prior_scale)
-    chain = sample(rng, model, sampler, MCMCThreads(), n_samples, n_chains; kwargs...)
+    chain = sample(rng, model, _sampler(sampler), MCMCThreads(), n_samples, n_chains; kwargs...)
+    _check_ess(chain, _coefficient_names(:gp))
     return EVAFit(:gp, excess, Xs, Float64(threshold), chain)
 end

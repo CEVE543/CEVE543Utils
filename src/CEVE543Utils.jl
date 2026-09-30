@@ -38,13 +38,14 @@ using Statistics
 using Tables
 using Turing
 
-using Turing: DynamicPPL
+using Turing: DynamicPPL, AbstractMCMC, LogDensityProblems
 import Distributions: logpdf, params
 
 export gev_logpdf, gp_logpdf, GEVKernel, GPKernel
 export design_matrix
-export EVAFit, params, getdistribution, posterior_distributions, returnlevel, loglike
+export EVAFit, params, getdistribution, posterior_distributions, returnlevel, loglike, thin
 export gevfit, gpfit, gevfitbayes, gpfitbayes, gevfit_lmom
+export DEMCzs
 export Station, WaterLevelRecord, AnnMaxRecord
 export load_water_level, detrend, waterlevels, obstimes, obsyears, baseline
 export plotting_positions, return_period_axis, return_period_axis!
@@ -53,6 +54,7 @@ export mrl_plot, stability_plot
 
 include("kernels.jl")
 include("models.jl")
+include("demczs.jl")
 include("fitting.jl")
 include("lmoments.jl")
 include("tables.jl")

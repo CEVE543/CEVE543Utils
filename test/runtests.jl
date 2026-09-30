@@ -1,6 +1,6 @@
 using CairoMakie          # loading a backend is what turns the Makie extension on
 using CEVE543Utils
-using CEVE543Utils: detrend_baseline, recentre
+using CEVE543Utils: detrend_baseline, recentre, Turing
 using CSV
 using DataFrames
 using Dates
@@ -326,6 +326,90 @@ end
     @test median(only(d).σ for d in draws) ≈ truth.σ rtol = 0.10
     levels = [returnlevel(only(d), 100; rate=3.0) for d in draws]
     @test all(>(threshold), levels)
+end
+
+@testset "DEMCzs samples a posterior with a hard edge" begin
+    # θ ~ N(0, [1 ρ; ρ 1]) cut to θ₁ > a. θ₁ is a truncated standard normal with
+    # mean m = φ(a) / (1 - Φ(a)) and variance 1 + a m - m²; θ₂ = ρ θ₁ + N(0, 1 - ρ²).
+    a, ρ = -0.5, 0.9
+    Turing.@model function edge()
+        θ ~ MvNormal([0.0, 0.0], [1.0 ρ; ρ 1.0])
+        θ[1] > a || Turing.@addlogprob! (; logprior=-Inf)
+    end
+    m = pdf(Normal(), a) / ccdf(Normal(), a)
+    v = 1 + a * m - m^2
+    # snooker=1 uses only the snooker move, so an error in its acceptance ratio
+    # shows; at the default 0.1 dropping its Jacobian moves var(θ₁) by only 4%
+    @testset "snooker = $snooker" for snooker in (0.1, 1.0)
+        chain = Turing.sample(
+            MersenneTwister(543), edge(), Turing.externalsampler(DEMCzs(; snooker)),
+            Turing.MCMCThreads(), 4_000, 4; progress=false,
+        )
+        θ = reduce(hcat, vec(chain[:θ]))
+        @test all(>(a), θ[1, :])
+        @test mean(θ[1, :]) ≈ m atol = 0.02
+        @test mean(θ[2, :]) ≈ ρ * m atol = 0.02
+        @test var(θ[1, :]) ≈ v rtol = 0.05
+        @test var(θ[2, :]) ≈ ρ^2 * v + 1 - ρ^2 rtol = 0.05
+    end
+end
+
+@testset "DEMCzs on a constrained parameter, and reproducibly" begin
+    # x ~ N(0, √s²) with s² ~ InverseGamma(α, β) has posterior
+    # InverseGamma(α + n/2, β + Σx²/2); s² > 0 is sampled on the log scale
+    x = rand(MersenneTwister(543), Normal(0, 1.5), 20)
+    α, β = 3.0, 2.0
+    Turing.@model function variance(x)
+        s² ~ InverseGamma(α, β)
+        x .~ Normal(0, sqrt(s²))
+    end
+    draw(seed) = vec(Turing.sample(
+        MersenneTwister(seed), variance(x), Turing.externalsampler(DEMCzs()),
+        Turing.MCMCThreads(), 2_000, 4; progress=false,
+    )[Symbol("s²")])
+    draws = draw(1)           # not named s², which the model would assign to
+    exact = InverseGamma(α + length(x) / 2, β + sum(abs2, x) / 2)
+    @test all(>(0), draws)
+    @test mean(draws) ≈ mean(exact) rtol = 0.03
+    @test quantile(draws, 0.95) ≈ quantile(exact, 0.95) rtol = 0.05
+    @test draw(1) == draws    # every random number comes from the rng passed in
+end
+
+@testset "gpfitbayes with sampler=:demczs" begin
+    # a shape this negative puts the upper bound just past the largest excess,
+    # where NUTS diverges
+    truth = GeneralizedPareto(0.0, 1.0, -0.4)
+    y = rand(MersenneTwister(543), truth, 1_000)
+    fit = gpfitbayes(y, 0.0; sampler=:demczs, n_samples=2_000, rng=MersenneTwister(543))
+    draws = only.(posterior_distributions(fit))
+    @test length(draws) == 2_000 * 4
+    @test median(d.ξ for d in draws) ≈ truth.ξ atol = 0.05
+    @test median(d.σ for d in draws) ≈ truth.σ rtol = 0.10
+    @test all(d -> maximum(d) >= maximum(y), draws)    # every draw keeps the data in its support
+end
+
+@testset "a low effective sample size warns, and thin fixes it" begin
+    y = rand(MersenneTwister(543), GeneralizedPareto(0.0, 1.0, -0.4), 1_000)
+    unthinned = Turing.externalsampler(DEMCzs(; thin=1))
+    fit = @test_logs (:warn, r"effective sample size") match_mode = :any gpfitbayes(
+        y, 0.0; sampler=unthinned, n_samples=2_000, rng=MersenneTwister(543), progress=false
+    )
+    @test_logs min_level = Base.CoreLogging.Warn gpfitbayes(
+        y, 0.0; sampler=:demczs, rng=MersenneTwister(543), progress=false
+    )
+
+    tail_share(f) = CEVE543Utils._tail_share(f.estimate, (:β_logscale, :β_shape))
+    @test tail_share(fit) < 0.25
+    @test tail_share(thin(fit)) >= 0.25
+    @test length(posterior_distributions(thin(fit, 2))) == 1_000 * 4
+    @test_throws ArgumentError thin(gpfit(y, 0.0))
+
+    # too short to estimate the tail ESS: no warning, and `thin` needs a `k`
+    short = @test_logs min_level = Base.CoreLogging.Warn gpfitbayes(
+        y, 0.0; sampler=:demczs, n_samples=5, rng=MersenneTwister(543), progress=false
+    )
+    @test_throws ArgumentError thin(short)
+    @test length(posterior_distributions(thin(short, 5))) == 4
 end
 
 @testset "detrend_baseline and recentre" begin
