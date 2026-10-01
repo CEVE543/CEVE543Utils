@@ -5,7 +5,7 @@ Turing model.
 `gevfit`, `gpfit`, `getdistribution` and `returnlevel` mean what they mean in
 Extremes.jl, and covariates are named the same way. What differs is underneath:
 each family is one Turing model, entered either by mode estimation for a point
-estimate or by NUTS for the posterior, so covariates reach both.
+estimate or by DE-MCzs sampling for the posterior, so covariates reach both.
 
     fit = gevfit(annmax)                          # stationary, maximum likelihood
     gev = only(getdistribution(fit))              # one distribution

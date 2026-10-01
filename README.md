@@ -25,7 +25,9 @@ returnlevel(fit, 100; rate=2.5)                 # needs exceedances per year
 
 fit = gevfitbayes(annmax)                       # posterior instead of a point
 posterior_distributions(fit)                    # one distribution per draw
-gevfitbayes(annmax; sampler=:demczs)            # DE-MCzs, when NUTS diverges at the support edge
+returnlevel(fit, 100)                           # one row per draw
+gevfitbayes(annmax; quantile_priors=[(index=lastindex(annmax), period=100, belief=Normal(5, 1))])
+gevfitbayes(df, :y; locationcovid=[:year], trend_priors=(location=Normal(0, 1),))   # slope prior, per sd
 thin(fit)                                       # about one draw per effective draw
 ```
 

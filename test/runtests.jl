@@ -328,6 +328,43 @@ end
     @test all(>(threshold), levels)
 end
 
+@testset "flat, trend, and quantile priors" begin
+    rng = MersenneTwister(543)
+    x = collect(range(-1.5, 1.5; length=80))
+    y = [rand(rng, GeneralizedExtremeValue(90 + 10xi, exp(log(35) + 0.1xi), 0.15)) for xi in x]
+    fit(; kw...) = gevfitbayes(
+        y; locationcov=[x], logscalecov=[x], n_samples=500, rng=MersenneTwister(1), progress=false, kw...
+    )
+
+    # a posterior fit gives one row of levels per draw, one column per observation
+    flat = fit()
+    z = returnlevel(flat, 100)
+    @test size(z) == (500 * 4, 80)
+    @test z[1, :] ≈ [returnlevel(d, 100) for d in first(posterior_distributions(flat))]
+
+    # a confident belief about the last observation's 100-year level pulls the posterior to it
+    informed = fit(; quantile_priors=[(index=80, period=100, belief=Normal(600, 5))])
+    @test median(returnlevel(informed, 100)[:, 80]) ≈ 600 atol = 15
+    @test median(z[:, 80]) < 550
+
+    # a narrow trend prior pulls the slopes toward zero
+    narrow = fit(; trend_priors=(location=Normal(0, 0.01),))
+    slope(f) = median(getindex.(vec(f.estimate[:β_location]), 2))
+    @test abs(slope(narrow)) < 0.1 * abs(slope(flat))
+
+    @test_throws ArgumentError fit(; quantile_priors=[(index=81, period=100, belief=Normal(600, 5))])
+    @test_throws ArgumentError fit(; trend_priors=(locaton=Normal(0, 1),))   # a misspelled name is caught
+
+    # peaks over threshold: the level needs the rate, and the index is into the full data
+    peaks = rand(MersenneTwister(2), GeneralizedPareto(0.0, 20.0, 0.1), 1_000)
+    belief = [(index=1, period=100, belief=Normal(400, 5))]
+    @test_throws ArgumentError gpfitbayes(peaks, 10.0; quantile_priors=belief)
+    gp = gpfitbayes(peaks, 10.0; quantile_priors=belief, rate=10.0, n_samples=500,
+        rng=MersenneTwister(1), progress=false)
+    @test median(returnlevel(gp, 100; rate=10.0)) ≈ 400 atol = 15
+    @test_throws ArgumentError returnlevel(gp, 100)
+end
+
 @testset "DEMCzs samples a posterior with a hard edge" begin
     # θ ~ N(0, [1 ρ; ρ 1]) cut to θ₁ > a. θ₁ is a truncated standard normal with
     # mean m = φ(a) / (1 - Φ(a)) and variance 1 + a m - m²; θ₂ = ρ θ₁ + N(0, 1 - ρ²).

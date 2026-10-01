@@ -122,7 +122,8 @@ end
     returnlevel(fit, T; rate) -> Vector
 
 The `T`-year return level, one entry per distribution [`getdistribution`](@ref)
-returns.
+returns. For a fit from [`gevfitbayes`](@ref) or [`gpfitbayes`](@ref), a matrix
+with one row per posterior draw and one column per distribution.
 
 A peaks over threshold fit needs `rate`, the number of exceedances per year,
 because its distributions describe one exceedance rather than one year. It
@@ -130,6 +131,7 @@ carries the threshold in its distributions, so the result is already a level on
 the original scale.
 """
 function returnlevel(fit::EVAFit, T; rate=nothing)
+    fit.estimate isa Turing.Optimisation.ModeResult || return _posterior_levels(fit, T, rate)
     if fit.family === :gp
         isnothing(rate) && throw(
             ArgumentError(
@@ -140,6 +142,15 @@ function returnlevel(fit::EVAFit, T; rate=nothing)
         return [returnlevel(d, T; rate=rate) for d in getdistribution(fit)]
     end
     return [returnlevel(d, T) for d in getdistribution(fit)]
+end
+
+# Draws × distributions, one row per posterior draw.
+function _posterior_levels(fit, T, rate)
+    fit.family === :gp && isnothing(rate) && throw(
+        ArgumentError("a peaks over threshold fit needs `rate`, the exceedances per year"),
+    )
+    level(d) = fit.family === :gp ? returnlevel(d, T; rate=rate) : returnlevel(d, T)
+    return permutedims(reduce(hcat, [level.(ds) for ds in posterior_distributions(fit)]))
 end
 
 """
@@ -245,8 +256,8 @@ function gevfit(
 )
     y = collect(Float64, y)
     Xs = _gev_matrices(length(y), locationcov, logscalecov, shapecov)
-    # `maximum_likelihood` ignores the prior; 1.0 is a placeholder.
-    model = gev_model(y, Xs.location.X, Xs.logscale.X, Xs.shape.X, 1.0)
+    # `maximum_likelihood` ignores the prior; flat priors leave the shape unbounded.
+    model = gev_model(y, Xs.location.X, Xs.logscale.X, Xs.shape.X, _trend_priors((;), :gev), Flat(), [])
     estimate = maximum_likelihood(model; initial_params=_gev_init(y, Xs), kwargs...)
     return EVAFit(:gev, y, Xs, NaN, estimate)
 end
@@ -271,8 +282,8 @@ function gpfit(
 )
     y = collect(Float64, y)
     excess, Xs = _exceedances(y, threshold, logscalecov, shapecov)
-    # `maximum_likelihood` ignores the prior; 1.0 is a placeholder.
-    model = gp_model(excess, Xs.logscale.X, Xs.shape.X, 1.0)
+    # `maximum_likelihood` ignores the prior; flat priors leave the shape unbounded.
+    model = gp_model(excess, Xs.logscale.X, Xs.shape.X, _trend_priors((;), :gp), Flat(), [], threshold, 1.0)
     estimate = maximum_likelihood(model; initial_params=_gp_init(excess, Xs), kwargs...)
     return EVAFit(:gp, excess, Xs, Float64(threshold), estimate)
 end
@@ -330,75 +341,127 @@ function thin(fit::EVAFit, k::Union{Integer,Nothing}=nothing)
 end
 
 """
-    gevfitbayes(y; locationcov, logscalecov, shapecov, prior_scale, n_samples, n_chains, rng, sampler)
+    gevfitbayes(y; locationcov, logscalecov, shapecov, trend_priors, shape_prior,
+                quantile_priors, n_samples, n_chains, rng, sampler)
 
-Sample the posterior with NUTS instead of taking a point estimate.
+Sample the posterior of the model [`gevfit`](@ref) fits.
 
-The model and the covariate keywords are the ones [`gevfit`](@ref) uses, with
-the priors below on top, so a nonstationary fit reads the same either way.
-`fit.estimate` is the chain, and [`posterior_distributions`](@ref) turns it
-into distributions.
+Covariates are standardized (see [`standardize`](@ref)) and `fit.estimate` is on
+that scale. Priors: flat on the location and log-scale intercepts, so
+`π(σ) ∝ 1/σ` for a stationary scale; `shape_prior` (default `Uniform(-0.5, 0.5)`)
+on the shape intercept.
 
-Covariates are standardized (see [`standardize`](@ref)), and `fit.estimate` is
-on that scale. Priors: `N(0, prior_scale)` on every location and log-scale
-coefficient, so the default 100 is a standard deviation of 10 per standard
-deviation of the covariate; `N(0, 0.25)` on the shape coefficients.
+`trend_priors` sets the prior on the slopes, a named tuple with any of
+`location`, `logscale` and `shape`; each applies to every slope of that
+parameter, per standard deviation of its covariate. Defaults: `Flat()` for
+`location` and `logscale`, `Normal(0, 0.25)` for `shape`. Units: a `location`
+slope is in the units of `y` per standard deviation; a `logscale` slope is the
+change in `log σ` per standard deviation, so `0.1` scales `σ` by `e^0.1 ≈ 1.11`.
 
-`sampler` defaults to `NUTS()`. The GEV support moves with its parameters, so
-divergences are common at the default step size; `sampler=NUTS(0.99)` takes
-smaller steps and usually removes them. `sampler=:demczs` runs [`DEMCzs`](@ref),
-whose moves use no gradient and so do not diverge at the support edge.
-Warns when the smallest tail effective sample size over the coefficients is
-below 25% of the draws; see [`thin`](@ref).
+    trend_priors=(location=Normal(0, 25), logscale=Normal(0, 0.5))
+
+`quantile_priors` is a vector of `(index, period, belief)`: `belief` is a
+distribution for the `period`-year level of the distribution at observation
+`index`, added to the log prior. Several may be given.
+
+    gevfitbayes(y; locationcov=[x],
+        quantile_priors=[(index=lastindex(y), period=100, belief=Normal(450, 40))])
+
+`sampler` defaults to `:demczs`, [`DEMCzs`](@ref); any Turing sampler such as
+`NUTS(0.99)` is accepted. Warns when the smallest tail effective sample size over
+the coefficients is below 25% of the draws; see [`thin`](@ref).
 """
 function gevfitbayes(
     y::AbstractVector;
     locationcov=nothing,
     logscalecov=nothing,
     shapecov=nothing,
-    prior_scale=100.0,
+    trend_priors=(;),
+    shape_prior=Uniform(-0.5, 0.5),
+    quantile_priors=[],
     n_samples=1_000,
     n_chains=4,
     rng=Random.default_rng(),
-    sampler=NUTS(),
+    sampler=:demczs,
     kwargs...,
 )
     y = collect(Float64, y)
     Xs = _gev_matrices(length(y), locationcov, logscalecov, shapecov)
-    model = gev_model(y, Xs.location.X, Xs.logscale.X, Xs.shape.X, prior_scale)
+    covs = (location=locationcov, logscale=logscalecov, shape=shapecov)
+    beliefs = _beliefs(quantile_priors, length(y), covs, Xs)
+    model = gev_model(
+        y, Xs.location.X, Xs.logscale.X, Xs.shape.X, _trend_priors(trend_priors, :gev), shape_prior, beliefs
+    )
     chain = sample(rng, model, _sampler(sampler), MCMCThreads(), n_samples, n_chains; kwargs...)
     _check_ess(chain, _coefficient_names(:gev))
     return EVAFit(:gev, y, Xs, NaN, chain)
 end
 
 """
-    gpfitbayes(y, threshold; logscalecov, shapecov, prior_scale, n_samples, n_chains, rng, sampler)
+    gpfitbayes(y, threshold; logscalecov, shapecov, trend_priors, shape_prior,
+               quantile_priors, rate, n_samples, n_chains, rng, sampler)
 
-Sample the posterior of a peaks over threshold fit with NUTS.
+Sample the posterior of the model [`gpfit`](@ref) fits, with the priors of
+[`gevfitbayes`](@ref); `trend_priors` takes `logscale` and `shape`.
 
-Covariates are standardized and `fit.estimate` is on that scale, as in
-[`gevfitbayes`](@ref). Priors: `N(0, prior_scale)` on every log-scale
-coefficient, `N(0, 0.25)` on the shape coefficients. [`posterior_distributions`](@ref)
-turns the chain into distributions. `sampler` is passed to Turing's `sample` and
-defaults to `NUTS()`; `sampler=:demczs` runs [`DEMCzs`](@ref), and a low
-effective sample size warns, as in [`gevfitbayes`](@ref).
+`quantile_priors` is as in [`gevfitbayes`](@ref), with `index` an index into `y`
+(any observation, above the threshold or not) and the level computed with
+`rate`, the exceedances per year, which is then required.
 """
 function gpfitbayes(
     y::AbstractVector,
     threshold::Real;
     logscalecov=nothing,
     shapecov=nothing,
-    prior_scale=100.0,
+    trend_priors=(;),
+    shape_prior=Uniform(-0.5, 0.5),
+    quantile_priors=[],
+    rate=nothing,
     n_samples=1_000,
     n_chains=4,
     rng=Random.default_rng(),
-    sampler=NUTS(),
+    sampler=:demczs,
     kwargs...,
 )
     y = collect(Float64, y)
     excess, Xs = _exceedances(y, threshold, logscalecov, shapecov)
-    model = gp_model(excess, Xs.logscale.X, Xs.shape.X, prior_scale)
+    isempty(quantile_priors) || !isnothing(rate) || throw(
+        ArgumentError("quantile priors on a peaks over threshold fit need `rate`, the exceedances per year")
+    )
+    covs = (logscale=logscalecov, shape=shapecov)
+    beliefs = _beliefs(quantile_priors, length(y), covs, Xs)
+    model = gp_model(
+        excess, Xs.logscale.X, Xs.shape.X, _trend_priors(trend_priors, :gp), shape_prior, beliefs,
+        Float64(threshold), something(rate, 1.0),
+    )
     chain = sample(rng, model, _sampler(sampler), MCMCThreads(), n_samples, n_chains; kwargs...)
     _check_ess(chain, _coefficient_names(:gp))
     return EVAFit(:gp, excess, Xs, Float64(threshold), chain)
+end
+
+# `trend_priors` with the defaults filled in; a name the family lacks is an error.
+function _trend_priors(given, family)
+    defaults = family === :gev ? (location=Flat(), logscale=Flat(), shape=Normal(0, 0.25)) :
+               (logscale=Flat(), shape=Normal(0, 0.25))
+    extra = setdiff(keys(given), keys(defaults))
+    isempty(extra) || throw(ArgumentError(
+        "trend_priors takes $(join(keys(defaults), ", ")); got $(join(extra, ", "))"))
+    return merge(defaults, given)
+end
+
+# The standardized design row of observation `i`: 1, then (x_i - center) / scale
+# for each covariate, with the center and scale the fit used.
+function _design_row(cov, i, design)
+    isnothing(cov) && return [1.0]
+    x = [Float64(collect(c)[i]) for c in _covariate_columns(cov)]
+    isempty(x) && return [1.0]
+    return [1.0; (x .- design.center) ./ design.scale]
+end
+
+function _beliefs(quantile_priors, n, covs, Xs)
+    return map(quantile_priors) do q
+        1 <= q.index <= n || throw(ArgumentError("quantile prior index $(q.index) is outside 1:$n"))
+        rows = map(k -> _design_row(covs[k], q.index, Xs[k]), keys(covs))
+        merge(NamedTuple{keys(covs)}(rows), (period=q.period, belief=q.belief))
+    end
 end
