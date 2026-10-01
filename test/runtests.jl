@@ -359,6 +359,13 @@ end
     @test_throws ArgumentError fit(; quantile_priors=[(index=81, period=100, belief=Normal(600, 5))])
     @test_throws ArgumentError fit(; trend_priors=(locaton=Normal(0, 1),))   # a misspelled name is caught
 
+    # levels at new covariate values agree with the data's rows where the values match
+    at = returnlevel(flat, 100; locationcov=[[x[1], x[end]]], logscalecov=[[x[1], x[end]]])
+    @test at ≈ z[:, [1, end]]
+    mle = gevfit(y; locationcov=[x], logscalecov=[x])
+    @test returnlevel(mle, 100; locationcov=[[x[end]]], logscalecov=[[x[end]]]) ≈ [returnlevel(mle, 100)[end]]
+    @test_throws ArgumentError returnlevel(flat, 100; locationcov=[[0.0]])   # the scale needs one too
+
     # peaks over threshold: the level needs the rate, and the index is into the full data
     peaks = rand(MersenneTwister(2), GeneralizedPareto(0.0, 20.0, 0.1), 1_000)
     belief = [(index=1, period=100, belief=Normal(400, 5))]

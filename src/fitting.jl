@@ -87,14 +87,16 @@ function posterior_distributions(fit::EVAFit)
             "use `getdistribution`",
         ),
     )
-    # Turing returns a FlexiChain indexed by variable name, and each entry is the
-    # whole coefficient vector for one draw.
+    return [_distributions(fit, β) for β in _coefficient_draws(fit)]
+end
+
+# One named tuple of coefficient vectors per posterior draw. Turing returns a
+# FlexiChain indexed by variable name, and each entry is the whole coefficient
+# vector for one draw.
+function _coefficient_draws(fit::EVAFit)
     names = _coefficient_names(fit.family)
-    columns = [vec(chain[name]) for name in names]
-    return [
-        _distributions(fit, NamedTuple{names}(Tuple(c[k] for c in columns))) for
-        k in eachindex(first(columns))
-    ]
+    columns = [vec(fit.estimate[name]) for name in names]
+    return [NamedTuple{names}(Tuple(c[k] for c in columns)) for k in eachindex(first(columns))]
 end
 
 # The distributions implied by one set of coefficients, shared by the point
@@ -126,32 +128,66 @@ The `T`-year return level, one entry per distribution [`getdistribution`](@ref)
 returns. For a fit from [`gevfitbayes`](@ref) or [`gpfitbayes`](@ref), a matrix
 with one row per posterior draw and one column per distribution.
 
+With `locationcov`, `logscalecov` or `shapecov`, the levels are at those covariate
+values instead of the data's, given in the form the fit took them, one value per
+new point; every parameter the fit gave covariates needs them.
+
+    returnlevel(fit, 100; locationcov=[[2026, 2066]], logscalecov=[[2026, 2066]])
+
 A peaks over threshold fit needs `rate`, the number of exceedances per year,
 because its distributions describe one exceedance rather than one year. It
 carries the threshold in its distributions, so the result is already a level on
 the original scale.
 """
-function returnlevel(fit::EVAFit, T; rate=nothing)
-    fit.estimate isa Turing.Optimisation.ModeResult || return _posterior_levels(fit, T, rate)
-    if fit.family === :gp
-        isnothing(rate) && throw(
-            ArgumentError(
-                "a peaks over threshold fit needs `rate`, the exceedances per year, " *
-                "to turn a return period in years into a level",
-            ),
-        )
-        return [returnlevel(d, T; rate=rate) for d in getdistribution(fit)]
+function returnlevel(
+    fit::EVAFit, T; rate=nothing, locationcov=nothing, logscalecov=nothing, shapecov=nothing
+)
+    fit.family === :gp && isnothing(rate) && throw(
+        ArgumentError(
+            "a peaks over threshold fit needs `rate`, the exceedances per year, " *
+            "to turn a return period in years into a level",
+        ),
+    )
+    fit.family === :gp && !isnothing(locationcov) &&
+        throw(ArgumentError("a peaks over threshold fit has no location covariates"))
+    level(d) = fit.family === :gp ? returnlevel(d, T; rate=rate) : returnlevel(d, T)
+    new = if fit.family === :gev
+        (location=locationcov, logscale=logscalecov, shape=shapecov)
+    else
+        (logscale=logscalecov, shape=shapecov)
     end
-    return [returnlevel(d, T) for d in getdistribution(fit)]
+    dists = all(isnothing, new) ? (β -> _distributions(fit, β)) : (β -> _new_distributions(fit, new, β))
+    fit.estimate isa Turing.Optimisation.ModeResult && return level.(dists(_raw_params(fit)))
+    return permutedims(reduce(hcat, [level.(dists(β)) for β in _coefficient_draws(fit)]))
 end
 
-# Draws × distributions, one row per posterior draw.
-function _posterior_levels(fit, T, rate)
-    fit.family === :gp && isnothing(rate) && throw(
-        ArgumentError("a peaks over threshold fit needs `rate`, the exceedances per year"),
-    )
-    level(d) = fit.family === :gp ? returnlevel(d, T; rate=rate) : returnlevel(d, T)
-    return permutedims(reduce(hcat, [level.(ds) for ds in posterior_distributions(fit)]))
+# The distributions at new covariate values, one per value given.
+function _new_distributions(fit, new, β)
+    n = length(first(_covariate_columns(first(filter(!isnothing, collect(values(new)))))))
+    rows = map(keys(new)) do k
+        design = fit.Xs[k]
+        isnothing(new[k]) && size(design.X, 2) > 1 &&
+            throw(ArgumentError("the fit has $(k) covariates, so `$(k)cov` is needed for new values"))
+        r = [_design_row(new[k], i, design) for i in 1:n]
+        all(x -> length(x) == size(design.X, 2), r) ||
+            throw(ArgumentError("`$(k)cov` needs $(size(design.X, 2) - 1) covariate(s), as the fit has"))
+        r
+    end
+    rows = NamedTuple{keys(new)}(rows)
+    if fit.family === :gev
+        return [
+            GeneralizedExtremeValue(
+                dot(rows.location[i], β.β_location),
+                exp(dot(rows.logscale[i], β.β_logscale)),
+                dot(rows.shape[i], β.β_shape),
+            ) for i in 1:n
+        ]
+    end
+    return [
+        GeneralizedPareto(
+            fit.threshold, exp(dot(rows.logscale[i], β.β_logscale)), dot(rows.shape[i], β.β_shape)
+        ) for i in 1:n
+    ]
 end
 
 """
