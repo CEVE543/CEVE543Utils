@@ -174,7 +174,7 @@ end
     fit = gevfit(y; locationcov=[years])
     β = params(fit).β_location
     @test β[2] ≈ slope rtol = 0.20                          # per year, as passed in
-    @test β[1] + β[2] * 1900 ≈ 4.0 atol = 0.2               # the line passes through the data
+    @test β[1] ≈ 4.0 + slope * 50 atol = 0.2                # the intercept is the location at the mean year
     dists = getdistribution(fit)
     @test dists[1].μ ≈ 4.0 atol = 0.2
     @test dists[end].μ ≈ 6.0 atol = 0.2
@@ -283,8 +283,11 @@ end
     @test intercept(:β_shape) ≈ truth.ξ atol = 0.06
 
     # a posterior is not a point estimate, and says so rather than guessing
-    @test_throws ArgumentError params(fit)
     @test_throws ArgumentError loglike(fit)
+
+    # a posterior gives one row of coefficients per draw
+    @test size(params(fit).β_location) == (400 * 2, 1)
+    @test median(params(fit).β_location[:, 1]) ≈ truth.μ rtol = 0.05
 
     # one stationary distribution per draw, matching the chain
     draws = posterior_distributions(fit)
@@ -312,6 +315,7 @@ end
     # the location climbs across the record by the slope times the covariate's span
     @test median(last(d).μ - first(d).μ for d in draws) ≈ 1.0 rtol = 0.3
     @test median(first(d).μ for d in draws) ≈ 4.0 rtol = 0.1
+    @test median(params(fit).β_location[:, 2]) ≈ 0.01 rtol = 0.3   # slope per year, as passed in
 end
 
 @testset "gpfitbayes and posterior_distributions" begin

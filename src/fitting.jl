@@ -19,18 +19,22 @@ end
 """
     params(fit) -> NamedTuple
 
-The fitted coefficients for each parameter, intercept first, on the scale of the
-covariates as passed in. The fit works on standardized covariates
-`z = (x - c) / s`, so `fit.estimate` holds `β` with `β₀ + Σ βⱼ zⱼ`; this returns
-the equivalent `(β₀ - Σ βⱼ cⱼ / sⱼ, β₁ / s₁, …)`.
+The fitted coefficients for each parameter, intercept first. The fit works on
+standardized covariates `z = (x - c) / s`, with `β₀ + Σ βⱼ zⱼ`; this returns
+`(β₀, β₁ / s₁, …)`: the intercept is the value at the covariate means `c`, and each
+slope is per unit of its covariate as passed in.
 
-Point estimates only; for a posterior use [`posterior_distributions`](@ref).
+For a point estimate, a vector per parameter. For a posterior, a matrix per
+parameter with one row per draw.
 """
 function params(fit::EVAFit)
-    raw = _raw_params(fit)
-    return NamedTuple{keys(raw)}(
-        Tuple(_original_scale(raw[k], fit.Xs[_design_key(k)]) for k in keys(raw))
-    )
+    names = _coefficient_names(fit.family)
+    if fit.estimate isa Turing.Optimisation.ModeResult
+        raw = _raw_params(fit)
+        return NamedTuple{names}(Tuple(_original_scale(raw[k], fit.Xs[_design_key(k)]) for k in names))
+    end
+    draws(k) = permutedims(reduce(hcat, [_original_scale(β, fit.Xs[_design_key(k)]) for β in vec(fit.estimate[k])]))
+    return NamedTuple{names}(Tuple(draws(k) for k in names))
 end
 
 # The coefficients as the optimizer left them, on the standardized scale.
@@ -47,10 +51,7 @@ end
 # `β_location` was fitted against `Xs.location`, and so on.
 _design_key(name::Symbol) = Symbol(chopprefix(string(name), "β_"))
 
-function _original_scale(β, design)
-    slopes = β[2:end] ./ design.scale
-    return vcat(β[1] - sum(slopes .* design.center), slopes)
-end
+_original_scale(β, design) = vcat(β[1], β[2:end] ./ design.scale)
 
 _stationary(fit::EVAFit) = all(d -> size(d.X, 2) == 1, values(fit.Xs))
 
